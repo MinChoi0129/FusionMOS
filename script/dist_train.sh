@@ -1,12 +1,21 @@
 #!/bin/bash
 
-DatasetPath=DATAROOT
+DatasetPath=/home/work_docker/KITTI/dataset
 ArchConfig=./train_yaml/ddp_mos_coarse_stage.yml
 DataConfig=./config/labels/semantic-kitti-mos.raw.yaml
 LogPath=./log/Train
 
-export CUDA_VISIBLE_DEVICES=0,1 && python3 -m torch.distributed.launch --nproc_per_node=2 \
-                                           ./train.py -d $DatasetPath \
-                                                      -ac $ArchConfig \
-                                                      -dc $DataConfig \
-                                                      -l $LogPath
+# 환경 변수 설정
+export SETUPTOOLS_USE_DISTUTILS=stdlib
+export OMP_NUM_THREADS=8
+export CUDA_VISIBLE_DEVICES="0,1,2,3"
+
+# 분산 학습 실행 (torchrun 사용)
+torchrun --nproc_per_node=4 \
+         --master_port=29500 \
+         -- \
+         ./train.py --dataset "$DatasetPath" \
+                    --arch_cfg "$ArchConfig" \
+                    --data_cfg "$DataConfig" \
+                    --log "$LogPath"
+                    # --pretrained "/home/work_docker/MF-MOS/log/Train/2025-2-18-05:09"

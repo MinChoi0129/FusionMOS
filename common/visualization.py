@@ -4,25 +4,25 @@ import matplotlib
 import numpy as np
 import pykitti
 
-matplotlib.use('Agg')
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import yaml
 
-basedir = ''
-sequence = ''
-uncerts = ''
-preds = ''
-gt = ''
-img = ''
-lidar = ''
-projected_uncert = ''
-projected_preds = ''
+basedir = ""
+sequence = ""
+uncerts = ""
+preds = ""
+gt = ""
+img = ""
+lidar = ""
+projected_uncert = ""
+projected_preds = ""
 
 dataset = pykitti.odometry(basedir, sequence)
 
-EXTENSIONS_LABEL = ['.label']
-EXTENSIONS_LIDAR = ['.bin']
-EXTENSIONS_IMG = ['.png']
+EXTENSIONS_LABEL = [".label"]
+EXTENSIONS_LIDAR = [".bin"]
+EXTENSIONS_IMG = [".png"]
 
 
 def is_label(filename):
@@ -49,23 +49,35 @@ def get_mpl_colormap(cmap_name):
     return color_range.reshape(256, 3).astype(np.float32) / 255.0
 
 
-path = os.path.join(basedir + 'sequences/' + sequence + uncerts)
+path = os.path.join(basedir + "sequences/" + sequence + uncerts)
 
-scan_uncert = [os.path.join(dp, f) for dp, dn, fn in os.walk(
-    os.path.expanduser(path)) for f in fn if is_label(f)]
+scan_uncert = [
+    os.path.join(dp, f)
+    for dp, dn, fn in os.walk(os.path.expanduser(path))
+    for f in fn
+    if is_label(f)
+]
 scan_uncert.sort()
-path = os.path.join(basedir + 'sequences/' + sequence + preds)
-scan_preds = [os.path.join(dp, f) for dp, dn, fn in os.walk(
-    os.path.expanduser(path)) for f in fn if is_label(f)]
+path = os.path.join(basedir + "sequences/" + sequence + preds)
+scan_preds = [
+    os.path.join(dp, f)
+    for dp, dn, fn in os.walk(os.path.expanduser(path))
+    for f in fn
+    if is_label(f)
+]
 scan_preds.sort()
 
-path = os.path.join(basedir + 'sequences/' + sequence + gt)
-scan_gt = [os.path.join(dp, f) for dp, dn, fn in os.walk(
-    os.path.expanduser(path)) for f in fn if is_label(f)]
+path = os.path.join(basedir + "sequences/" + sequence + gt)
+scan_gt = [
+    os.path.join(dp, f)
+    for dp, dn, fn in os.walk(os.path.expanduser(path))
+    for f in fn
+    if is_label(f)
+]
 scan_gt.sort()
 
-color_map_dict = yaml.safe_load(open("color_map.yml"))['color_map']
-learning_map = yaml.safe_load(open("color_map.yml"))['learning_map']
+color_map_dict = yaml.safe_load(open("color_map.yml"))["color_map"]
+learning_map = yaml.safe_load(open("color_map.yml"))["learning_map"]
 color_map = {}
 uncert_mean = np.zeros(20)
 total_points_per_class = np.zeros(20)
@@ -80,7 +92,7 @@ def plot_and_save(label_uncert, label_name, lidar_name, cam2_image_name):
     try:
         cam2_image = plt.imread(cam2_image_name)
     except IOError:
-        print('detect error img %s' % label_name)
+        print("detect error img %s" % label_name)
 
     plt.imshow(cam2_image)
 
@@ -112,22 +124,30 @@ def plot_and_save(label_uncert, label_name, lidar_name, cam2_image_name):
             if label > 0 and v > 0 and v < 1241 and u > 0 and u < 376:
                 uncert_mean[learning_map[label]] += uncert
                 total_points_per_class[learning_map[label]] += 1
-                m_circle = plt.Circle((v, u), 1,
-                                      color=matplotlib.cm.viridis(uncert),
-                                      alpha=0.4,
-                                      # color=color_map[label][..., ::-1]
-                                      )
+                m_circle = plt.Circle(
+                    (v, u),
+                    1,
+                    color=matplotlib.cm.viridis(uncert),
+                    alpha=0.4,
+                    # color=color_map[label][..., ::-1]
+                )
                 plt.gcf().gca().add_artist(m_circle)
 
-    plt.axis('off')
-    path = os.path.join(basedir + 'sequences/' + sequence + projected_uncert)
-    plt.savefig(path + label_name.split('/')[-1].split('.')[0] + '.png', bbox_inches='tight', transparent=True,
-                pad_inches=0)
+    plt.axis("off")
+    path = os.path.join(basedir + "sequences/" + sequence + projected_uncert)
+    plt.savefig(
+        path + label_name.split("/")[-1].split(".")[0] + ".png",
+        bbox_inches="tight",
+        transparent=True,
+        pad_inches=0,
+    )
+
 
 # with futures.ProcessPoolExecutor() as pool:
-for label_uncert, label_name, lidar_name, cam2_image_name in zip(scan_uncert, scan_preds, dataset.velo_files,
-                                                                 dataset.cam2_files):
-    print(label_name.split('/')[-1])
+for label_uncert, label_name, lidar_name, cam2_image_name in zip(
+    scan_uncert, scan_preds, dataset.velo_files, dataset.cam2_files
+):
+    print(label_name.split("/")[-1])
     # if label_name == '/SPACE/DATA/SemanticKITTI/dataset/sequences/13/predictions/preds/001032.label':
     plot_and_save(label_uncert, label_name, lidar_name, cam2_image_name)
 print(total_points_per_class)

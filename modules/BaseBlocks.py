@@ -9,17 +9,19 @@ import torch.nn.functional as F
 # from SoftPool import soft_pool2d, SoftPool2d
 from typing import Tuple
 
+
 @torch.jit.script
 def pixelshuffle(x: torch.Tensor, factor_hw: Tuple[int, int]):
     pH = factor_hw[0]
     pW = factor_hw[1]
     y = x
     B, iC, iH, iW = y.shape
-    oC, oH, oW = iC//(pH*pW), iH*pH, iW*pW
+    oC, oH, oW = iC // (pH * pW), iH * pH, iW * pW
     y = y.reshape(B, oC, pH, pW, iH, iW)
-    y = y.permute(0, 1, 4, 2, 5, 3)     # B, oC, iH, pH, iW, pW
+    y = y.permute(0, 1, 4, 2, 5, 3)  # B, oC, iH, pH, iW, pW
     y = y.reshape(B, oC, oH, oW)
     return y
+
 
 class ResContextBlock(nn.Module):
     def __init__(self, in_filters, out_filters):
@@ -50,28 +52,44 @@ class ResContextBlock(nn.Module):
         output = shortcut + resA2
         return output
 
+
 class ResBlock(nn.Module):
-    def __init__(self, in_filters, out_filters, dropout_rate, 
-                 kernel_size=(3, 3), stride=1, pooling=True, drop_out=True, use_softpool=False):
+    def __init__(
+        self,
+        in_filters,
+        out_filters,
+        dropout_rate,
+        kernel_size=(3, 3),
+        stride=1,
+        pooling=True,
+        drop_out=True,
+        use_softpool=False,
+    ):
         super(ResBlock, self).__init__()
         self.pooling = pooling
         self.drop_out = drop_out
-        self.conv1 = nn.Conv2d(in_filters, out_filters, kernel_size=(1, 1), stride=stride)
+        self.conv1 = nn.Conv2d(
+            in_filters, out_filters, kernel_size=(1, 1), stride=stride
+        )
         self.act1 = nn.LeakyReLU()
 
-        self.conv2 = nn.Conv2d(in_filters, out_filters, kernel_size=(3,3), padding=1)
+        self.conv2 = nn.Conv2d(in_filters, out_filters, kernel_size=(3, 3), padding=1)
         self.act2 = nn.LeakyReLU()
         self.bn1 = nn.BatchNorm2d(out_filters)
 
-        self.conv3 = nn.Conv2d(out_filters, out_filters, kernel_size=(3,3),dilation=2, padding=2)
+        self.conv3 = nn.Conv2d(
+            out_filters, out_filters, kernel_size=(3, 3), dilation=2, padding=2
+        )
         self.act3 = nn.LeakyReLU()
         self.bn2 = nn.BatchNorm2d(out_filters)
 
-        self.conv4 = nn.Conv2d(out_filters, out_filters, kernel_size=(2, 2), dilation=2, padding=1)
+        self.conv4 = nn.Conv2d(
+            out_filters, out_filters, kernel_size=(2, 2), dilation=2, padding=1
+        )
         self.act4 = nn.LeakyReLU()
         self.bn3 = nn.BatchNorm2d(out_filters)
 
-        self.conv5 = nn.Conv2d(out_filters*3, out_filters, kernel_size=(1, 1))
+        self.conv5 = nn.Conv2d(out_filters * 3, out_filters, kernel_size=(1, 1))
         self.act5 = nn.LeakyReLU()
         self.bn4 = nn.BatchNorm2d(out_filters)
 
@@ -86,23 +104,23 @@ class ResBlock(nn.Module):
             self.dropout = nn.Dropout2d(p=dropout_rate)
 
     def forward(self, x):
-        shortcut = self.conv1(x)    # (3, 64, 64, 2048)
+        shortcut = self.conv1(x)  # (3, 64, 64, 2048)
         shortcut = self.act1(shortcut)
 
         resA = self.conv2(x)
         resA = self.act2(resA)
         resA1 = self.bn1(resA)
 
-        resA = self.conv3(resA1)    # (3, 64, 64, 2048)
+        resA = self.conv3(resA1)  # (3, 64, 64, 2048)
         resA = self.act3(resA)
         resA2 = self.bn2(resA)
 
-        resA = self.conv4(resA2)    # (3, 64, 64, 2048)
+        resA = self.conv4(resA2)  # (3, 64, 64, 2048)
         resA = self.act4(resA)
         resA3 = self.bn3(resA)
 
-        concat = torch.cat((resA1, resA2, resA3), dim=1)    # (3, 192, 64, 2048)
-        resA = self.conv5(concat)   # (3, 64, 64, 2048)
+        concat = torch.cat((resA1, resA2, resA3), dim=1)  # (3, 192, 64, 2048)
+        resA = self.conv5(concat)  # (3, 64, 64, 2048)
         resA = self.act5(resA)
         resA = self.bn4(resA)
         resA = shortcut + resA  # (3, 64, 64, 2048)
@@ -132,7 +150,9 @@ class UpBlock(nn.Module):
         self.dropout3 = nn.Dropout2d(p=dropout_rate)
 
         # self.conv1 = nn.Conv2d(in_filters // 4 + 2*out_filters, out_filters, (3, 3), padding=1)
-        self.conv1 = nn.Conv2d(in_filters // 8 + 2 * out_filters, out_filters, (3, 3), padding=1)
+        self.conv1 = nn.Conv2d(
+            in_filters // 8 + 2 * out_filters, out_filters, (3, 3), padding=1
+        )
         self.act1 = nn.LeakyReLU()
         self.bn1 = nn.BatchNorm2d(out_filters)
 
@@ -144,7 +164,7 @@ class UpBlock(nn.Module):
         self.act3 = nn.LeakyReLU()
         self.bn3 = nn.BatchNorm2d(out_filters)
 
-        self.conv4 = nn.Conv2d(out_filters*3, out_filters, kernel_size=(1, 1))
+        self.conv4 = nn.Conv2d(out_filters * 3, out_filters, kernel_size=(1, 1))
         self.act4 = nn.LeakyReLU()
         self.bn4 = nn.BatchNorm2d(out_filters)
 
@@ -181,7 +201,15 @@ class UpBlock(nn.Module):
 
 
 class MetaKernel(nn.Module):
-    def __init__(self, num_batch, feat_height, feat_width, coord_channels, fp16=False, num_frame=1):
+    def __init__(
+        self,
+        num_batch,
+        feat_height,
+        feat_width,
+        coord_channels,
+        fp16=False,
+        num_frame=1,
+    ):
         super(MetaKernel, self).__init__()
         self.num_batch = num_batch
         self.H = feat_height
@@ -193,33 +221,39 @@ class MetaKernel(nn.Module):
         self.coord_channels = coord_channels
         print("meta num_batch is : ", self.num_batch)
         # TODO: Best to put this part of the definition in __init__ function ?
-        self.conv1 = nn.Conv2d(self.coord_channels,
-                               self.channel_list[0],
-                               kernel_size=(1, 1),
-                               stride=(1, 1),
-                               padding=0,
-                               dilation=1,
-                               bias=True)
+        self.conv1 = nn.Conv2d(
+            self.coord_channels,
+            self.channel_list[0],
+            kernel_size=(1, 1),
+            stride=(1, 1),
+            padding=0,
+            dilation=1,
+            bias=True,
+        )
         if self.use_norm:
             self.bn1 = nn.BatchNorm2d(self.channel_list[0])
         # self.act1 = nn.ReLU()
         self.act1 = nn.LeakyReLU()
 
-        self.conv2 = nn.Conv2d(self.channel_list[0],
-                               self.channel_list[1],
-                               kernel_size=(1, 1),
-                               stride=(1, 1),
-                               padding=0,
-                               dilation=1,
-                               bias=True)
-        self.conv1x1 = nn.Conv2d(in_channels=288, out_channels=32, kernel_size=1, stride=1, padding=0)
+        self.conv2 = nn.Conv2d(
+            self.channel_list[0],
+            self.channel_list[1],
+            kernel_size=(1, 1),
+            stride=(1, 1),
+            padding=0,
+            dilation=1,
+            bias=True,
+        )
+        self.conv1x1 = nn.Conv2d(
+            in_channels=288, out_channels=32, kernel_size=1, stride=1, padding=0
+        )
 
     def update_num_batch(self, num_batch):
         self.num_batch = num_batch
 
     @staticmethod
     def sampler_im2col(data, name=None, kernel=1, stride=1, pad=None, dilate=1):
-        """ please refer to mx.symbol.im2col """
+        """please refer to mx.symbol.im2col"""
         if isinstance(kernel, int):
             kernel = (kernel, kernel)
         if isinstance(stride, int):
@@ -227,7 +261,9 @@ class MetaKernel(nn.Module):
         if isinstance(dilate, int):
             dilate = (dilate, dilate)
         if pad is None:
-            assert kernel[0] % 2 == 1, "Specify pad for an even kernel size in function sampler_im2col"
+            assert (
+                kernel[0] % 2 == 1
+            ), "Specify pad for an even kernel size in function sampler_im2col"
             pad = ((kernel[0] - 1) * dilate[0] + 1) // 2
         if isinstance(pad, int):
             pad = (pad, pad)
@@ -243,10 +279,9 @@ class MetaKernel(nn.Module):
 
         # https://pytorch.org/docs/stable/generated/torch.nn.Unfold.html
         # torch._C._nn.im2col(input, _pair(kernel_size), _pair(dilation), _pair(padding), _pair(stride))
-        output = F.unfold(data, kernel_size=kernel, 
-                                dilation=dilate,
-                                stride=stride, 
-                                padding=pad)
+        output = F.unfold(
+            data, kernel_size=kernel, dilation=dilate, stride=stride, padding=pad
+        )
 
         return output
 
@@ -258,11 +293,8 @@ class MetaKernel(nn.Module):
         :return: sample_output: num_batch, num_channel_in * kernel_size * kernel_size, H, W
         """
         sample_output = self.sampler_im2col(
-            data=data,
-            kernel=kernel_size,
-            stride=1,
-            pad=1,
-            dilate=1)
+            data=data, kernel=kernel_size, stride=1, pad=1, dilate=1
+        )
         return sample_output
 
     def sample_coord(self, coord, kernel_size):
@@ -273,11 +305,8 @@ class MetaKernel(nn.Module):
         :return: coord_sample_data: num_batch, num_channel_in * kernel_size * kernel_size, H, W
         """
         coord_sample_data = self.sampler_im2col(
-            data=coord,
-            kernel=kernel_size,
-            stride=1,
-            pad=1,
-            dilate=1)
+            data=coord, kernel=kernel_size, stride=1, pad=1, dilate=1
+        )
 
         return coord_sample_data
 
@@ -296,8 +325,8 @@ class MetaKernel(nn.Module):
                 num_channel_in,
                 kernel_size * kernel_size,
                 self.H,
-                self.W
-            )
+                self.W,
+            ),
         )
         # ic(sample_reshape.size())
 
@@ -323,14 +352,7 @@ class MetaKernel(nn.Module):
         # NOTE: Currently only supports two-layer Conv structure
         assert len(channel_list) == 2
 
-        x = torch.reshape(
-            data,
-            shape=(self.num_batch * b_mul,
-                in_channels,
-                -1,
-                self.W
-            )
-        )
+        x = torch.reshape(data, shape=(self.num_batch * b_mul, in_channels, -1, self.W))
 
         y = self.conv1(x)
         # ic(y.size())
@@ -342,14 +364,7 @@ class MetaKernel(nn.Module):
         # ic(y.size())
 
         mlp_output_reshape = torch.reshape(
-            y,
-            shape=(
-                self.num_batch * b_mul,
-                channel_list[-1],
-                -1,
-                self.H,
-                self.W
-            )
+            y, shape=(self.num_batch * b_mul, channel_list[-1], -1, self.H, self.W)
         )
         # ic(mlp_output_reshape.size())
         return mlp_output_reshape
@@ -370,75 +385,44 @@ class MetaKernel(nn.Module):
         :return: conv1: num_batch, conv1_filter, H, W
         """
 
-        coord_sample_data = self.sample_coord(coord_data, kernel_size)  # (1, 45, 131072)
+        coord_sample_data = self.sample_coord(
+            coord_data, kernel_size
+        )  # (1, 45, 131072)
         # ic(coord_sample_data.size())
         # ic(coord_data.size())
 
-        rel_coord = self.relative_coord(    # (1, 5, 9, 64, 2048)
-            coord_sample_data,
-            coord_data,
-            coord_channels,
-            kernel_size)
+        rel_coord = self.relative_coord(  # (1, 5, 9, 64, 2048)
+            coord_sample_data, coord_data, coord_channels, kernel_size
+        )
         # ic(rel_coord.size())
 
-        weights = self.mlp(     # (1, 32, 9, 64, 2048)
-            rel_coord,
-            in_channels=coord_channels,
-            channel_list=self.channel_list)
+        weights = self.mlp(  # (1, 32, 9, 64, 2048)
+            rel_coord, in_channels=coord_channels, channel_list=self.channel_list
+        )
         # ic(weights.size())
 
-        data_sample = self.sample_data(data, kernel_size)   # (1, 288, 131072)
+        data_sample = self.sample_data(data, kernel_size)  # (1, 288, 131072)
         # ic(data_sample.size())
 
-        data_sample_reshape = torch.reshape(        # (1, 32, 9, 64, 2048)
+        data_sample_reshape = torch.reshape(  # (1, 32, 9, 64, 2048)
             data_sample,
             shape=(
                 self.num_batch,
                 data_channels,
                 kernel_size * kernel_size,
                 self.H,
-                self.W)
+                self.W,
+            ),
         )
         # ic(data_sample_reshape.size())
 
         output = data_sample_reshape * weights  # (1, 32, 9, 64, 2048)
         # ic(output.size())
 
-        output_reshape = torch.reshape(     # (1, 288, 64, 2048)
-            output,
-            shape=(
-                self.num_batch,
-                -1,
-                self.H,
-                self.W)
+        output_reshape = torch.reshape(  # (1, 288, 64, 2048)
+            output, shape=(self.num_batch, -1, self.H, self.W)
         )
         # ic(output_reshape.size())
 
-        output = self.conv1x1(output_reshape)   # (1, 32, 64, 2048)
+        output = self.conv1x1(output_reshape)  # (1, 32, 64, 2048)
         return output
-
-if __name__ == '__main__':
-    # from icecream import ic
-    #
-    # input = torch.randn(1, 8, 64, 2048)
-    # METAConv = MetaKernel(
-    #     num_batch=1,
-    #     feat_height=64,
-    #     feat_width=2048,
-    #     coord_channels=8)
-    #
-    # downCntx = torch.randn(1, 32, 64, 2048)
-    # output = METAConv(data=downCntx,
-    #                   coord_data=input,
-    #                   data_channels=downCntx.size()[1],
-    #                   coord_channels=input.size()[1],
-    #                   kernel_size=3)
-    #
-    # ic(output.size())
-
-    input = torch.randn(1, 32, 64, 2048)
-    block = ResBlock(32, 2 * 32, 0.2, pooling=True, drop_out=False, kernel_size=(2, 4))
-    output1, output2 = block(input)
-
-    print(output1.shape)
-    print(output2.shape)

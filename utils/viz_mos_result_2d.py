@@ -12,6 +12,7 @@ from auxiliary.laserscan import LaserScan, SemLaserScan
 from matplotlib import pyplot as plt
 from utils import load_yaml, check_and_makedirs
 
+
 def get_mpl_colormap(cmap_name):
     cmap = plt.get_cmap(cmap_name)
     # Initialize the matplotlib color map
@@ -47,7 +48,7 @@ def remap(label, mapdict):
     return lut[label]
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
 
     seq = "08"
     frame_id = [98, 218, 222, 1630, 1641, 50]
@@ -60,7 +61,7 @@ if __name__ == '__main__':
         "gtlabel": data_path,
         "method1": "/the prediction result of method_1",
         "method2": "/the prediction result of method_2",
-        "ours": "/the prediction result of ours"
+        "ours": "/the prediction result of ours",
     }
 
     config_path = "config/labels/semantic-kitti-mos.yaml"
@@ -69,20 +70,22 @@ if __name__ == '__main__':
     color_dict = CFG["color_map"]
     nclasses = len(color_dict)
 
-    scan = SemLaserScan(nclasses, color_dict, project=True, H=64, W=2048, fov_up=3.0, fov_down=-25.0)
+    scan = SemLaserScan(
+        nclasses, color_dict, project=True, H=64, W=2048, fov_up=3.0, fov_down=-25.0
+    )
 
     for f_id in frame_id:
-        str_fid = "%06d"%(f_id)
+        str_fid = "%06d" % (f_id)
         print(str_fid)
 
-        scan_path = f'{data_path}/sequences/{seq}/velodyne/{str_fid}.bin'
+        scan_path = f"{data_path}/sequences/{seq}/velodyne/{str_fid}.bin"
         scan.open_scan(scan_path)
 
         for key, value in path.items():
-            if key == 'gtlabel':
-                label_path = f'{value}/sequences/{seq}/labels/{str_fid}.label'
+            if key == "gtlabel":
+                label_path = f"{value}/sequences/{seq}/labels/{str_fid}.label"
             else:
-                label_path = f'{value}/sequences/{seq}/predictions/{str_fid}.label'
+                label_path = f"{value}/sequences/{seq}/predictions/{str_fid}.label"
 
             print(key)
 
@@ -96,16 +99,21 @@ if __name__ == '__main__':
             power = 16
             data = np.copy(scan.proj_range)
 
-            data[data > 0] = data[data > 0]**(1 / power)
+            data[data > 0] = data[data > 0] ** (1 / power)
             data[data < 0] = data[data > 0].min()
 
-            data = (data - data[data > 0].min()) / \
-                (data.max() - data[data > 0].min()) * 255
+            data = (
+                (data - data[data > 0].min())
+                / (data.max() - data[data > 0].min())
+                * 255
+            )
 
-            out_img = cv2.applyColorMap(data.astype(np.uint8), get_mpl_colormap('viridis'))
-            imgpath = f'{save_path}/Range2D_{key}_seq{seq}_fid{f_id}.png'
+            out_img = cv2.applyColorMap(
+                data.astype(np.uint8), get_mpl_colormap("viridis")
+            )
+            imgpath = f"{save_path}/Range2D_{key}_seq{seq}_fid{f_id}.png"
             cv2.imwrite(imgpath, out_img, [cv2.IMWRITE_PNG_COMPRESSION, 0])
 
-            seg_vis2D = scan.proj_sem_color * 255 # (64, 1024, 3)
-            imgpath = f'{save_path}/Pred2d_{key}_seq{seq}_fid{f_id}.png'
+            seg_vis2D = scan.proj_sem_color * 255  # (64, 1024, 3)
+            imgpath = f"{save_path}/Pred2d_{key}_seq{seq}_fid{f_id}.png"
             cv2.imwrite(imgpath, seg_vis2D, [cv2.IMWRITE_PNG_COMPRESSION, 0])

@@ -55,16 +55,15 @@ class AverageMeter(object):
 
 
 def save_to_txtlog(logdir, logfile, message):
-    f = open(logdir + '/' + logfile, "a")
-    f.write(message + '\n')
+    f = open(logdir + "/" + logfile, "a")
+    f.write(message + "\n")
     f.close()
     return
 
 
 def save_checkpoint(to_save, logdir, suffix=""):
     # Save the weights
-    torch.save(to_save, logdir +
-               "/MFMOS" + suffix)
+    torch.save(to_save, logdir + "/MFMOS" + suffix)
 
 
 def get_mpl_colormap(cmap_name):
@@ -79,11 +78,13 @@ def get_mpl_colormap(cmap_name):
 def make_log_img(depth, mask, pred, gt, color_fn, movable=False):
     # input should be [depth, pred, gt]
     # make range image (normalized to 0,1 for saving)
-    depth = (cv2.normalize(depth, None, alpha=0, beta=1,
-                           norm_type=cv2.NORM_MINMAX,
-                           dtype=cv2.CV_32F) * 255.0).astype(np.uint8)
-    out_img = cv2.applyColorMap(
-        depth, get_mpl_colormap('viridis')) * mask[..., None]
+    depth = (
+        cv2.normalize(
+            depth, None, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_32F
+        )
+        * 255.0
+    ).astype(np.uint8)
+    out_img = cv2.applyColorMap(depth, get_mpl_colormap("viridis")) * mask[..., None]
     # make label prediction
     pred_color = color_fn((pred * mask).astype(np.int32), movable=movable)
     out_img = np.concatenate([out_img, pred_color], axis=0)
@@ -92,7 +93,10 @@ def make_log_img(depth, mask, pred, gt, color_fn, movable=False):
     out_img = np.concatenate([out_img, gt_color], axis=0)
     return (out_img).astype(np.uint8)
 
-def show_scans_in_training(proj_mask, in_vol, argmax, proj_labels, color_fn, movable=False):
+
+def show_scans_in_training(
+    proj_mask, in_vol, argmax, proj_labels, color_fn, movable=False
+):
     # get the first scan in batch and project points
     mask_np = proj_mask[0].cpu().numpy()
     depth_np = in_vol[0][0].cpu().numpy()
@@ -119,7 +123,8 @@ class iouEval:
         # if ignore is larger than n_classes, consider no ignoreIndex
         self.ignore = torch.tensor(ignore).long()
         self.include = torch.tensor(
-            [n for n in range(self.n_classes) if n not in self.ignore]).long()
+            [n for n in range(self.n_classes) if n not in self.ignore]
+        ).long()
         print("[IOU EVAL] IGNORE: ", self.ignore)
         print("[IOU EVAL] INCLUDE: ", self.include)
         self.reset()
@@ -129,7 +134,8 @@ class iouEval:
 
     def reset(self):
         self.conf_matrix = torch.zeros(
-            (self.n_classes, self.n_classes), device=self.device).long()
+            (self.n_classes, self.n_classes), device=self.device
+        ).long()
         self.ones = None
         self.last_scan_size = None  # for when variable scan size is used
 
@@ -155,7 +161,8 @@ class iouEval:
 
         # make confusion matrix (cols = gt, rows = pred)
         self.conf_matrix = self.conf_matrix.index_put_(
-            tuple(idxs), self.ones, accumulate=True)
+            tuple(idxs), self.ones, accumulate=True
+        )
 
     def getStats(self):
         # remove fp and fn from confusion on the ignore classes cols and rows

@@ -9,72 +9,80 @@ from auxiliary.laserscan import LaserScan, SemLaserScan
 from auxiliary.laserscanvis import LaserScanVis
 import copy
 
+
 def get_args():
     parser = argparse.ArgumentParser("./visualize.py")
     parser.add_argument(
-        '--dataset', '-d',
+        "--dataset",
+        "-d",
         type=str,
         required=True,
-        help='Dataset to visualize. No Default',
+        help="Dataset to visualize. No Default",
     )
     parser.add_argument(
-        '--config', '-c',
+        "--config",
+        "-c",
         type=str,
         required=False,
         default="config/labels/semantic-kitti-mos.yaml",
-        help='Dataset config file. Defaults to %(default)s',
+        help="Dataset config file. Defaults to %(default)s",
     )
     parser.add_argument(
-        '--sequence', '-s',
+        "--sequence",
+        "-s",
         type=str,
         default="00",
         required=False,
-        help='Sequence to visualize. Defaults to %(default)s',
+        help="Sequence to visualize. Defaults to %(default)s",
     )
     parser.add_argument(
-        '--predictions', '-p',
+        "--predictions",
+        "-p",
         type=str,
         default=None,
         required=False,
-        help='Alternate location for labels, to use predictions folder. '
-        'Must point to directory containing the predictions in the proper format '
-        ' (see readme)'
-        'Defaults to %(default)s',
+        help="Alternate location for labels, to use predictions folder. "
+        "Must point to directory containing the predictions in the proper format "
+        " (see readme)"
+        "Defaults to %(default)s",
     )
     parser.add_argument(
-        '--ignore_semantics', '-i',
-        dest='ignore_semantics',
+        "--ignore_semantics",
+        "-i",
+        dest="ignore_semantics",
         default=False,
-        action='store_true',
-        help='Ignore semantics. Visualizes uncolored pointclouds.'
-        'Defaults to %(default)s',
+        action="store_true",
+        help="Ignore semantics. Visualizes uncolored pointclouds."
+        "Defaults to %(default)s",
     )
     parser.add_argument(
-        '--do_instances', '-di',
-        dest='do_instances',
+        "--do_instances",
+        "-di",
+        dest="do_instances",
         default=False,
-        action='store_true',
-        help='Visualize instances too. Defaults to %(default)s',
+        action="store_true",
+        help="Visualize instances too. Defaults to %(default)s",
     )
     parser.add_argument(
-        '--offset',
+        "--offset",
         type=int,
         default=0,
         required=False,
-        help='Sequence to start. Defaults to %(default)s',
+        help="Sequence to start. Defaults to %(default)s",
     )
     parser.add_argument(
-        '--ignore_safety',
-        dest='ignore_safety',
+        "--ignore_safety",
+        dest="ignore_safety",
         default=False,
-        action='store_true',
-        help='Normally you want the number of labels and ptcls to be the same,'
-        ', but if you are not done inferring this is not the case, so this disables'
-        ' that safety.'
-        'Defaults to %(default)s',
+        action="store_true",
+        help="Normally you want the number of labels and ptcls to be the same,"
+        ", but if you are not done inferring this is not the case, so this disables"
+        " that safety."
+        "Defaults to %(default)s",
     )
     parser.add_argument(
-        '--version', '-v',
+        "--version",
+        "-v",
         type=str,
         default="moving",
         choices=["moving", "movable", "fuse"],
@@ -82,16 +90,16 @@ def get_args():
         help="which version is selected to visualize",
     )
     parser.add_argument(
-        '--gt_vis',
+        "--gt_vis",
         default=False,
-        action='store_true',
-        help='Whether to visualize the ground truth',
+        action="store_true",
+        help="Whether to visualize the ground truth",
     )
     return parser
 
 
-if __name__ == '__main__':
-    
+if __name__ == "__main__":
+
     parser = get_args()
     FLAGS, unparsed = parser.parse_known_args()
 
@@ -114,14 +122,14 @@ if __name__ == '__main__':
     # open config file
     try:
         print("Opening config file %s" % FLAGS.config)
-        CFG = yaml.safe_load(open(FLAGS.config, 'r'))
+        CFG = yaml.safe_load(open(FLAGS.config, "r"))
     except Exception as e:
         print(e)
         print("Error opening yaml file.")
         quit()
 
     # fix sequence name
-    FLAGS.sequence = '{0:02d}'.format(int(FLAGS.sequence))
+    FLAGS.sequence = "{0:02d}".format(int(FLAGS.sequence))
 
     # does sequence folder exist?
     scan_paths = os.path.join(FLAGS.dataset, "sequences", FLAGS.sequence, "velodyne")
@@ -132,14 +140,20 @@ if __name__ == '__main__':
         quit()
 
     # populate the pointclouds
-    scan_names = [os.path.join(dp, f) for dp, dn, fn in os.walk(os.path.expanduser(scan_paths)) for f in fn]
+    scan_names = [
+        os.path.join(dp, f)
+        for dp, dn, fn in os.walk(os.path.expanduser(scan_paths))
+        for f in fn
+    ]
     scan_names.sort()
 
     pred_label_names = None
 
     # does sequence folder exist?
     if not FLAGS.ignore_semantics:
-        gt_label_paths = os.path.join(FLAGS.dataset, "sequences", FLAGS.sequence, "labels")
+        gt_label_paths = os.path.join(
+            FLAGS.dataset, "sequences", FLAGS.sequence, "labels"
+        )
 
         if os.path.isdir(gt_label_paths):
             print("Labels folder exists! Using labels from %s" % gt_label_paths)
@@ -149,35 +163,57 @@ if __name__ == '__main__':
             quit()
 
         # populate the pointclouds
-        gt_label_names = [os.path.join(dp, f) for dp, dn, fn in os.walk(
-            os.path.expanduser(gt_label_paths)) for f in fn]
+        gt_label_names = [
+            os.path.join(dp, f)
+            for dp, dn, fn in os.walk(os.path.expanduser(gt_label_paths))
+            for f in fn
+        ]
         gt_label_names.sort()
 
         # check that there are same amount of labels and scans
         if not FLAGS.ignore_safety:
-            print(f"len(gt_label_names):{len(gt_label_names)}, len(scan_names)={len(scan_names)}")
-            assert(len(gt_label_names) == len(scan_names))
+            print(
+                f"len(gt_label_names):{len(gt_label_names)}, len(scan_names)={len(scan_names)}"
+            )
+            assert len(gt_label_names) == len(scan_names)
 
         if FLAGS.predictions is not None:
             if FLAGS.version == "moving":
-                pred_label_paths = os.path.join(FLAGS.predictions, "sequences", FLAGS.sequence, "predictions")
+                pred_label_paths = os.path.join(
+                    FLAGS.predictions, "sequences", FLAGS.sequence, "predictions"
+                )
             elif FLAGS.version == "movable":
-                pred_label_paths = os.path.join(FLAGS.predictions, "sequences", FLAGS.sequence, "predictions_movable")
+                pred_label_paths = os.path.join(
+                    FLAGS.predictions,
+                    "sequences",
+                    FLAGS.sequence,
+                    "predictions_movable",
+                )
             else:
-                pred_label_paths = os.path.join(FLAGS.predictions, "sequences", FLAGS.sequence, "predictions_fuse")
+                pred_label_paths = os.path.join(
+                    FLAGS.predictions, "sequences", FLAGS.sequence, "predictions_fuse"
+                )
 
             if os.path.isdir(pred_label_paths):
-                print("Predictions labels folder exists! Using labels from %s" % pred_label_paths)
+                print(
+                    "Predictions labels folder exists! Using labels from %s"
+                    % pred_label_paths
+                )
             else:
                 raise FileNotFoundError("Predictions labels doesn't exist! Exiting...")
-            pred_label_names = [os.path.join(dp, f) for dp, dn, fn in os.walk(
-                os.path.expanduser(pred_label_paths)) for f in fn]
+            pred_label_names = [
+                os.path.join(dp, f)
+                for dp, dn, fn in os.walk(os.path.expanduser(pred_label_paths))
+                for f in fn
+            ]
             pred_label_names.sort()
 
             # check that there are same amount of labels and scans
             if not FLAGS.ignore_safety:
-                print(f"len(pred_label_names):{len(pred_label_names)}, len(scan_names)={len(scan_names)}")
-                assert (len(pred_label_names) == len(scan_names))
+                print(
+                    f"len(pred_label_names):{len(pred_label_names)}, len(scan_names)={len(scan_names)}"
+                )
+                assert len(pred_label_names) == len(scan_names)
 
         color_dict = CFG["color_map"]
         gt_color_dict = copy.deepcopy(color_dict)
@@ -188,7 +224,9 @@ if __name__ == '__main__':
         # # import pdb; pdb.set_trace()
 
         for key in color_dict.keys():
-            if (key == 250) or (key in movable_learning_map.keys() and movable_learning_map[key] == 2):
+            if (key == 250) or (
+                key in movable_learning_map.keys() and movable_learning_map[key] == 2
+            ):
                 color_dict[key] = [255, 0, 0]
                 if key != 250 and moving_learning_map[key] == 2:
                     color_dict[key] = [0, 0, 255]
@@ -199,29 +237,37 @@ if __name__ == '__main__':
         scan = SemLaserScan(nclasses, color_dict, H=H, W=W, project=True)
     else:
         gt_label_names = None
-        scan = LaserScan(H=H, W=W, project=True)  # project all opened scans to spheric proj
+        scan = LaserScan(
+            H=H, W=W, project=True
+        )  # project all opened scans to spheric proj
 
     # create a visualizer
-    vis = LaserScanVis(H=H, W=W,
-                       scan=scan,
-                       scan_names=scan_names,
-                       gt_label_names=gt_label_names,
-                       pred_label_names=pred_label_names,
-                       offset=FLAGS.offset,
-                       semantics=not FLAGS.ignore_semantics, instances=FLAGS.do_instances and not FLAGS.ignore_semantics)
+    vis = LaserScanVis(
+        H=H,
+        W=W,
+        scan=scan,
+        scan_names=scan_names,
+        gt_label_names=gt_label_names,
+        pred_label_names=pred_label_names,
+        offset=FLAGS.offset,
+        semantics=not FLAGS.ignore_semantics,
+        instances=FLAGS.do_instances and not FLAGS.ignore_semantics,
+    )
 
     # print instructions
     print("To navigate:")
     print("\tb: back (previous scan)")
     print("\tn: next (next scan)")
     print("\tq: quit (exit program)")
-    print("Describe:\n"
-          "image:     \t-------------\n"
-          "           \tRange image\n"
-          "           \tGround Truth\n"
-          "           \t{Predictions}\n"
-          "           \t-------------\n"
-          "PointCloud:\t[Ground Truth  ||  {Predictions}]")
+    print(
+        "Describe:\n"
+        "image:     \t-------------\n"
+        "           \tRange image\n"
+        "           \tGround Truth\n"
+        "           \t{Predictions}\n"
+        "           \t-------------\n"
+        "PointCloud:\t[Ground Truth  ||  {Predictions}]"
+    )
 
     # run the visualizer
     vis.run()

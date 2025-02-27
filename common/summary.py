@@ -19,7 +19,9 @@ def summary(model, input_size, batch_size=-1, device="cuda"):
             summary[m_key]["input_shape"] = list(input[0].size())
             summary[m_key]["input_shape"][0] = batch_size
             if isinstance(output, (list, tuple)):
-                summary[m_key]["output_shape"] = [[-1] + list(o.size())[1:] for o in output]
+                summary[m_key]["output_shape"] = [
+                    [-1] + list(o.size())[1:] for o in output
+                ]
             else:
                 summary[m_key]["output_shape"] = list(output.size())
                 summary[m_key]["output_shape"][0] = batch_size
@@ -32,13 +34,18 @@ def summary(model, input_size, batch_size=-1, device="cuda"):
                 params += torch.prod(torch.LongTensor(list(module.bias.size())))
             summary[m_key]["nb_params"] = params
 
-        if (not isinstance(module, nn.Sequential)
-              and not isinstance(module, nn.ModuleList)
-                and not (module == model)):
+        if (
+            not isinstance(module, nn.Sequential)
+            and not isinstance(module, nn.ModuleList)
+            and not (module == model)
+        ):
             hooks.append(module.register_forward_hook(hook))
 
     device = device.lower()
-    assert device in ["cuda", "cpu",], "Input device is not valid, please specify 'cuda' or 'cpu'"
+    assert device in [
+        "cuda",
+        "cpu",
+    ], "Input device is not valid, please specify 'cuda' or 'cpu'"
 
     if device == "cuda" and torch.cuda.is_available():
         dtype = torch.cuda.FloatTensor
@@ -90,9 +97,9 @@ def summary(model, input_size, batch_size=-1, device="cuda"):
         message += line_new + "\n"
 
     # assume 4 bytes/number (float on cuda).
-    total_input_size = abs(np.prod(input_size) * batch_size * 4. / (1024 ** 2.))
-    total_output_size = abs(2. * total_output * 4. / (1024 ** 2.))  # x2 for gradients
-    total_params_size = abs(total_params.numpy() * 4. / (1024 ** 2.))
+    total_input_size = abs(np.prod(input_size) * batch_size * 4.0 / (1024**2.0))
+    total_output_size = abs(2.0 * total_output * 4.0 / (1024**2.0))  # x2 for gradients
+    total_params_size = abs(total_params.numpy() * 4.0 / (1024**2.0))
     total_size = total_params_size + total_output_size + total_input_size
 
     message += "================================================================\n"

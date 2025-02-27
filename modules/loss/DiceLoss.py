@@ -6,23 +6,23 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-#PyTorch
+# PyTorch
 # class DiceLoss(nn.Module):
 #     def __init__(self, weight=None, size_average=True):
 #         super(DiceLoss, self).__init__()
 
 #     def forward(self, inputs, targets, smooth=1):
-        
+
 #         #comment out if your model contains a sigmoid or equivalent activation layer
-#         inputs = F.sigmoid(inputs)       
-        
+#         inputs = F.sigmoid(inputs)
+
 #         #flatten label and prediction tensors
 #         inputs = inputs.view(-1)
 #         targets = targets.view(-1)
-        
-#         intersection = (inputs * targets).sum()                            
-#         dice = (2.*intersection + smooth)/(inputs.sum() + targets.sum() + smooth)  
-        
+
+#         intersection = (inputs * targets).sum()
+#         dice = (2.*intersection + smooth)/(inputs.sum() + targets.sum() + smooth)
+
 #         return 1 - dice
 
 # https://smp.readthedocs.io/en/latest/losses.html
@@ -33,6 +33,7 @@ import torch.nn.functional as F
 
 # based on:
 # https://github.com/kevinzakka/pytorch-goodies/blob/master/losses.py
+
 
 class DiceLoss(nn.Module):
     r"""Criterion that computes Sørensen-Dice Coefficient loss.
@@ -73,28 +74,36 @@ class DiceLoss(nn.Module):
         super(DiceLoss, self).__init__()
         self.eps: float = 1e-6
 
-    def forward(self, input: torch.Tensor,
-                target: torch.Tensor) -> torch.Tensor:
+    def forward(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         if not torch.is_tensor(input):
-            raise TypeError("Input type is not a torch.Tensor. Got {}"
-                            .format(type(input)))
+            raise TypeError(
+                "Input type is not a torch.Tensor. Got {}".format(type(input))
+            )
         if not len(input.shape) == 4:
-            raise ValueError("Invalid input shape, we expect BxNxHxW. Got: {}"
-                             .format(input.shape))
+            raise ValueError(
+                "Invalid input shape, we expect BxNxHxW. Got: {}".format(input.shape)
+            )
         if not input.shape[-2:] == target.shape[-2:]:
-            raise ValueError("input and target shapes must be the same. Got: {}"
-                             .format(input.shape, input.shape))
+            raise ValueError(
+                "input and target shapes must be the same. Got: {}".format(
+                    input.shape, input.shape
+                )
+            )
         if not input.device == target.device:
             raise ValueError(
-                "input and target must be in the same device. Got: {}" .format(
-                    input.device, target.device))
+                "input and target must be in the same device. Got: {}".format(
+                    input.device, target.device
+                )
+            )
         # compute softmax over the classes axis
         # input_soft = F.softmax(input, dim=1) # have done is network last layer
 
         # create the labels one hot tensor
         # target_one_hot = one_hot(target, num_classes=input.shape[1],
         #                          device=input.device, dtype=input.dtype)
-        target_one_hot = F.one_hot(target, num_classes=input.shape[1]).permute(0, 3, 1, 2)
+        target_one_hot = F.one_hot(target, num_classes=input.shape[1]).permute(
+            0, 3, 1, 2
+        )
 
         # compute the actual dice score
         dims = (1, 2, 3)
@@ -107,9 +116,8 @@ class DiceLoss(nn.Module):
         intersection = torch.sum(input_filter * target_one_hot_filter, dims)
         cardinality = torch.sum(input_filter + target_one_hot_filter, dims)
 
-        dice_score = 2. * intersection / (cardinality + self.eps)
-        return torch.mean(1. - dice_score)
-
+        dice_score = 2.0 * intersection / (cardinality + self.eps)
+        return torch.mean(1.0 - dice_score)
 
 
 ######################
@@ -123,4 +131,3 @@ def dice_loss(input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     See :class:`~torchgeometry.losses.DiceLoss` for details.
     """
     return DiceLoss()(input, target)
-

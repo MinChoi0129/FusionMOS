@@ -14,6 +14,7 @@ import __init__ as booger
 
 from tqdm import tqdm
 from modules.user import User
+
 # from modules.SalsaNextWithMotionAttention import *
 
 # from modules.PointRefine.spvcnn import SPVCNN
@@ -24,42 +25,82 @@ from torchsparse import SparseTensor
 
 
 class UserRefine(User):
-    def __init__(self, ARCH, DATA, datadir, outputdir, modeldir, split, save_movable=False):
+    def __init__(
+        self, ARCH, DATA, datadir, outputdir, modeldir, split, save_movable=False
+    ):
 
-        super(UserRefine, self).__init__(ARCH, DATA, datadir, outputdir, modeldir, split,
-                                         point_refine=True, save_movable=save_movable)
+        super(UserRefine, self).__init__(
+            ARCH,
+            DATA,
+            datadir,
+            outputdir,
+            modeldir,
+            split,
+            point_refine=True,
+            save_movable=save_movable,
+        )
 
     def infer(self):
         coarse, reproj, refine = [], [], []
 
-        if self.split == 'valid':
-            self.infer_subset(loader=self.parser.get_valid_set(),
-                              to_orig_fn=self.parser.to_original,
-                              coarse=coarse, reproj=reproj, refine=refine)
-        elif self.split == 'train':
-            self.infer_subset(loader=self.parser.get_train_set(),
-                              to_orig_fn=self.parser.to_original,
-                              coarse=coarse, reproj=reproj, refine=refine)
-        elif self.split == 'test':
-            self.infer_subset(loader=self.parser.get_test_set(),
-                              to_orig_fn=self.parser.to_original,
-                              coarse=coarse, reproj=reproj, refine=refine)
+        if self.split == "valid":
+            self.infer_subset(
+                loader=self.parser.get_valid_set(),
+                to_orig_fn=self.parser.to_original,
+                coarse=coarse,
+                reproj=reproj,
+                refine=refine,
+            )
+        elif self.split == "train":
+            self.infer_subset(
+                loader=self.parser.get_train_set(),
+                to_orig_fn=self.parser.to_original,
+                coarse=coarse,
+                reproj=reproj,
+                refine=refine,
+            )
+        elif self.split == "test":
+            self.infer_subset(
+                loader=self.parser.get_test_set(),
+                to_orig_fn=self.parser.to_original,
+                coarse=coarse,
+                reproj=reproj,
+                refine=refine,
+            )
         elif self.split == None:
-            self.infer_subset(loader=self.parser.get_train_set(),
-                              to_orig_fn=self.parser.to_original,
-                              coarse=coarse, reproj=reproj, refine=refine)
-            self.infer_subset(loader=self.parser.get_valid_set(),
-                              to_orig_fn=self.parser.to_original,
-                              coarse=coarse, reproj=reproj, refine=refine)
-            self.infer_subset(loader=self.parser.get_test_set(),
-                              to_orig_fn=self.parser.to_original,
-                              coarse=coarse, reproj=reproj, refine=refine)
+            self.infer_subset(
+                loader=self.parser.get_train_set(),
+                to_orig_fn=self.parser.to_original,
+                coarse=coarse,
+                reproj=reproj,
+                refine=refine,
+            )
+            self.infer_subset(
+                loader=self.parser.get_valid_set(),
+                to_orig_fn=self.parser.to_original,
+                coarse=coarse,
+                reproj=reproj,
+                refine=refine,
+            )
+            self.infer_subset(
+                loader=self.parser.get_test_set(),
+                to_orig_fn=self.parser.to_original,
+                coarse=coarse,
+                reproj=reproj,
+                refine=refine,
+            )
         else:
             raise NotImplementedError
 
-        print(f"Mean Coarse inference time:{'%.8f'%np.mean(coarse)}\t std:{'%.8f'%np.std(coarse)}")
-        print(f"Mean Reproject inference time:{'%.8f'%np.mean(reproj)}\t std:{'%.8f'%np.std(reproj)}")
-        print(f"Mean Refine inference time:{'%.8f'%np.mean(refine)}\t std:{'%.8f'%np.std(refine)}")
+        print(
+            f"Mean Coarse inference time:{'%.8f'%np.mean(coarse)}\t std:{'%.8f'%np.std(coarse)}"
+        )
+        print(
+            f"Mean Reproject inference time:{'%.8f'%np.mean(reproj)}\t std:{'%.8f'%np.std(reproj)}"
+        )
+        print(
+            f"Mean Refine inference time:{'%.8f'%np.mean(refine)}\t std:{'%.8f'%np.std(refine)}"
+        )
         print(f"Total Frames: {len(coarse)}")
         print("Finished Infering")
 
@@ -79,9 +120,23 @@ class UserRefine(User):
 
             end = time.time()
 
-            for i, (proj_in, proj_mask, _, _, path_seq, path_name,
-                    p_x, p_y, proj_range, unproj_range, _, unproj_xyz, _, _, npoints)\
-                    in enumerate(tqdm(loader, ncols=80)):
+            for i, (
+                proj_in,
+                proj_mask,
+                _,
+                _,
+                path_seq,
+                path_name,
+                p_x,
+                p_y,
+                proj_range,
+                unproj_range,
+                _,
+                unproj_xyz,
+                _,
+                _,
+                npoints,
+            ) in enumerate(tqdm(loader, ncols=80)):
 
                 # first cut to rela size (batch size one allows it)
                 p_x = p_x[0, :npoints]
@@ -104,7 +159,6 @@ class UserRefine(User):
                 # compute output
                 proj_output, last_feature, movable_proj_output, _ = self.model(proj_in)
 
-
                 if torch.cuda.is_available():
                     torch.cuda.synchronize()
                 res = time.time() - end
@@ -113,8 +167,9 @@ class UserRefine(User):
                 if self.save_movable:
                     movable_proj_argmax = movable_proj_output[0].argmax(dim=0)
                     if self.post:
-                        movable_unproj_argmax = self.post(proj_range, unproj_range,
-                                                          movable_proj_argmax, p_x, p_y)
+                        movable_unproj_argmax = self.post(
+                            proj_range, unproj_range, movable_proj_argmax, p_x, p_y
+                        )
                     else:
                         movable_unproj_argmax = movable_proj_argmax[p_y, p_x]
 
@@ -125,12 +180,16 @@ class UserRefine(User):
                 points_feature = last_feature[0, :, p_y, p_x]
                 coords = np.round(points_xyz[:, :3].cpu().numpy() / 0.05)
                 coords -= coords.min(0, keepdims=1)
-                coords, indices, inverse = sparse_quantize(coords, return_index=True, return_inverse=True)
-                coords = torch.tensor(coords, dtype=torch.int, device='cuda')
-                feats = points_feature.permute(1,0)[indices] #torch.tensor(, dtype=torch.float)
+                coords, indices, inverse = sparse_quantize(
+                    coords, return_index=True, return_inverse=True
+                )
+                coords = torch.tensor(coords, dtype=torch.int, device="cuda")
+                feats = points_feature.permute(1, 0)[
+                    indices
+                ]  # torch.tensor(, dtype=torch.float)
                 inputs = SparseTensor(coords=coords, feats=feats)
                 inputs = sparse_collate([inputs]).cuda()
-                """"""""""""""""""""""""
+                """""" """""" """""" """"""
 
                 # measure elapsed time
                 if torch.cuda.is_available():
@@ -149,7 +208,7 @@ class UserRefine(User):
                 refine.append(res)
                 # print(f"RefineModule seq {path_seq} scan {path_name} in {res} sec")
 
-                predict = predict[inverse] #.permute(1,0)
+                predict = predict[inverse]  # .permute(1,0)
                 unproj_argmax = predict.argmax(dim=1)
 
                 # save scan # get the first scan in batch and project scan
@@ -159,7 +218,9 @@ class UserRefine(User):
                 # map to original label
                 pred_np = to_orig_fn(pred_np)
 
-                path = os.path.join(self.outputdir, "sequences", path_seq, "predictions", path_name)
+                path = os.path.join(
+                    self.outputdir, "sequences", path_seq, "predictions", path_name
+                )
                 pred_np.tofile(path)
 
                 if self.save_movable:
@@ -168,9 +229,21 @@ class UserRefine(User):
 
                     # map to original label
                     movable_pred_np = to_orig_fn(movable_pred_np, movable=True)
-                    path = os.path.join(self.outputdir, "sequences", path_seq, "predictions_movable", path_name)
+                    path = os.path.join(
+                        self.outputdir,
+                        "sequences",
+                        path_seq,
+                        "predictions_movable",
+                        path_name,
+                    )
                     movable_pred_np.tofile(path)
 
                     movable_pred_np[np.where(pred_np == 251)] = 251
-                    path = os.path.join(self.outputdir, "sequences", path_seq, "predictions_fuse", path_name)
+                    path = os.path.join(
+                        self.outputdir,
+                        "sequences",
+                        path_seq,
+                        "predictions_fuse",
+                        path_name,
+                    )
                     movable_pred_np.tofile(path)

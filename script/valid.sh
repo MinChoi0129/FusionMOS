@@ -1,7 +1,7 @@
 #!/bin/bash
 
-DatasetPath=DATAROOT
-ModelPath=MODELPATH
+DatasetPath=/home/work_docker/KITTI/dataset
+ModelPath=/home/work_docker/MF-MOS/log/TrainWithSIEM/2025-2-20-08:58
 SavePath=./log/Valid/predictions/
 SPLIT=valid # valid or test
 
@@ -10,5 +10,5 @@ export CUDA_VISIBLE_DEVICES=0 && python3 infer.py -d $DatasetPath \
                                                   -m $ModelPath \
                                                   -l $SavePath \
                                                   -s $SPLIT \
-                                                  --pointrefine \
-                                                  --movable # Whether to save the label of movable objects
+                                                  --movable  \
+                                                  --pointrefine 

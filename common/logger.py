@@ -5,6 +5,7 @@ import scipy.misc
 import tensorflow as tf
 from torch.utils.tensorboard import SummaryWriter
 import torch
+
 try:
     from StringIO import StringIO  # Python 2.7
 except ImportError:
@@ -36,12 +37,15 @@ class Logger(object):
             scipy.misc.toimage(img).save(s, format="png")
 
             # Create an Image object
-            img_sum = tf.Summary.Image(encoded_image_string=s.getvalue(),
-                                       height=img.shape[0],
-                                       width=img.shape[1])
+            img_sum = tf.Summary.Image(
+                encoded_image_string=s.getvalue(),
+                height=img.shape[0],
+                width=img.shape[1],
+            )
             # Create a Summary value
-            img_summaries.append(tf.Summary.Value(
-                tag='%s/%d' % (tag, i), image=img_sum))
+            img_summaries.append(
+                tf.Summary.Value(tag="%s/%d" % (tag, i), image=img_sum)
+            )
 
         # Create and write Summary
         summary = tf.Summary(value=img_summaries)
@@ -60,7 +64,7 @@ class Logger(object):
         hist.max = float(np.max(values))
         hist.num = int(np.prod(values.shape))
         hist.sum = float(np.sum(values))
-        hist.sum_squares = float(np.sum(values ** 2))
+        hist.sum_squares = float(np.sum(values**2))
 
         # Drop the start of the first bin
         bin_edges = bin_edges[1:]

@@ -7,20 +7,20 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 class ResContextBlock(nn.Module):
     def __init__(self, in_filters, out_filters):
         super(ResContextBlock, self).__init__()
         self.conv1 = nn.Conv2d(in_filters, out_filters, kernel_size=(1, 1), stride=1)
         self.act1 = nn.LeakyReLU()
 
-        self.conv2 = nn.Conv2d(out_filters, out_filters, (3,3), padding=1)
+        self.conv2 = nn.Conv2d(out_filters, out_filters, (3, 3), padding=1)
         self.act2 = nn.LeakyReLU()
         self.bn1 = nn.BatchNorm2d(out_filters)
 
-        self.conv3 = nn.Conv2d(out_filters, out_filters, (3,3),dilation=2, padding=2)
+        self.conv3 = nn.Conv2d(out_filters, out_filters, (3, 3), dilation=2, padding=2)
         self.act3 = nn.LeakyReLU()
         self.bn2 = nn.BatchNorm2d(out_filters)
-
 
     def forward(self, x):
 
@@ -40,27 +40,41 @@ class ResContextBlock(nn.Module):
 
 
 class ResBlock(nn.Module):
-    def __init__(self, in_filters, out_filters, dropout_rate, kernel_size=(3, 3), stride=1,
-                 pooling=True, drop_out=True):
+    def __init__(
+        self,
+        in_filters,
+        out_filters,
+        dropout_rate,
+        kernel_size=(3, 3),
+        stride=1,
+        pooling=True,
+        drop_out=True,
+    ):
         super(ResBlock, self).__init__()
         self.pooling = pooling
         self.drop_out = drop_out
-        self.conv1 = nn.Conv2d(in_filters, out_filters, kernel_size=(1, 1), stride=stride)
+        self.conv1 = nn.Conv2d(
+            in_filters, out_filters, kernel_size=(1, 1), stride=stride
+        )
         self.act1 = nn.LeakyReLU()
 
-        self.conv2 = nn.Conv2d(in_filters, out_filters, kernel_size=(3,3), padding=1)
+        self.conv2 = nn.Conv2d(in_filters, out_filters, kernel_size=(3, 3), padding=1)
         self.act2 = nn.LeakyReLU()
         self.bn1 = nn.BatchNorm2d(out_filters)
 
-        self.conv3 = nn.Conv2d(out_filters, out_filters, kernel_size=(3,3),dilation=2, padding=2)
+        self.conv3 = nn.Conv2d(
+            out_filters, out_filters, kernel_size=(3, 3), dilation=2, padding=2
+        )
         self.act3 = nn.LeakyReLU()
         self.bn2 = nn.BatchNorm2d(out_filters)
 
-        self.conv4 = nn.Conv2d(out_filters, out_filters, kernel_size=(2, 2), dilation=2, padding=1)
+        self.conv4 = nn.Conv2d(
+            out_filters, out_filters, kernel_size=(2, 2), dilation=2, padding=1
+        )
         self.act4 = nn.LeakyReLU()
         self.bn3 = nn.BatchNorm2d(out_filters)
 
-        self.conv5 = nn.Conv2d(out_filters*3, out_filters, kernel_size=(1, 1))
+        self.conv5 = nn.Conv2d(out_filters * 3, out_filters, kernel_size=(1, 1))
         self.act5 = nn.LeakyReLU()
         self.bn4 = nn.BatchNorm2d(out_filters)
 
@@ -86,12 +100,11 @@ class ResBlock(nn.Module):
         resA = self.act4(resA)
         resA3 = self.bn3(resA)
 
-        concat = torch.cat((resA1,resA2,resA3),dim=1)
+        concat = torch.cat((resA1, resA2, resA3), dim=1)
         resA = self.conv5(concat)
         resA = self.act5(resA)
         resA = self.bn4(resA)
         resA = shortcut + resA
-
 
         if self.pooling:
             if self.drop_out:
@@ -120,20 +133,21 @@ class UpBlock(nn.Module):
 
         self.dropout2 = nn.Dropout2d(p=dropout_rate)
 
-        self.conv1 = nn.Conv2d(in_filters//4 + 2*out_filters, out_filters, (3,3), padding=1)
+        self.conv1 = nn.Conv2d(
+            in_filters // 4 + 2 * out_filters, out_filters, (3, 3), padding=1
+        )
         self.act1 = nn.LeakyReLU()
         self.bn1 = nn.BatchNorm2d(out_filters)
 
-        self.conv2 = nn.Conv2d(out_filters, out_filters, (3,3),dilation=2, padding=2)
+        self.conv2 = nn.Conv2d(out_filters, out_filters, (3, 3), dilation=2, padding=2)
         self.act2 = nn.LeakyReLU()
         self.bn2 = nn.BatchNorm2d(out_filters)
 
-        self.conv3 = nn.Conv2d(out_filters, out_filters, (2,2), dilation=2,padding=1)
+        self.conv3 = nn.Conv2d(out_filters, out_filters, (2, 2), dilation=2, padding=1)
         self.act3 = nn.LeakyReLU()
         self.bn3 = nn.BatchNorm2d(out_filters)
 
-
-        self.conv4 = nn.Conv2d(out_filters*3,out_filters,kernel_size=(1,1))
+        self.conv4 = nn.Conv2d(out_filters * 3, out_filters, kernel_size=(1, 1))
         self.act4 = nn.LeakyReLU()
         self.bn4 = nn.BatchNorm2d(out_filters)
 
@@ -144,7 +158,7 @@ class UpBlock(nn.Module):
         if self.drop_out:
             upA = self.dropout1(upA)
 
-        upB = torch.cat((upA,skip),dim=1)
+        upB = torch.cat((upA, skip), dim=1)
         if self.drop_out:
             upB = self.dropout2(upB)
 
@@ -160,7 +174,7 @@ class UpBlock(nn.Module):
         upE = self.act3(upE)
         upE3 = self.bn3(upE)
 
-        concat = torch.cat((upE1,upE2,upE3),dim=1)
+        concat = torch.cat((upE1, upE2, upE3), dim=1)
         upE = self.conv4(concat)
         upE = self.act4(upE)
         upE = self.bn4(upE)
@@ -176,15 +190,15 @@ class SalsaNext(nn.Module):
         self.nclasses = nclasses
 
         ### mos modification
-        if params['train']['residual']:
-            self.input_size = 5 + params['train']['n_input_scans']
-        
+        if params["train"]["residual"]:
+            self.input_size = 5 + params["train"]["n_input_scans"]
+
         else:
-            self.input_size = 5 * params['train']['n_input_scans']
+            self.input_size = 5 * params["train"]["n_input_scans"]
 
         print("Depth of backbone input = ", self.input_size)
         ###
-        
+
         self.downCntx = ResContextBlock(self.input_size, 32)
         self.downCntx2 = ResContextBlock(32, 32)
         self.downCntx3 = ResContextBlock(32, 32)
@@ -213,7 +227,7 @@ class SalsaNext(nn.Module):
         down3c, down3b = self.resBlock4(down2c)
         down5c = self.resBlock5(down3c)
 
-        up4e = self.upBlock1(down5c,down3b)
+        up4e = self.upBlock1(down5c, down3b)
         up3e = self.upBlock2(up4e, down2b)
         up2e = self.upBlock3(up3e, down1b)
         up1e = self.upBlock4(up2e, down0b)

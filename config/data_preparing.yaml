@@ -12,7 +12,7 @@ debug: False
 normalize: True
 # use the last n frame to calculate the difference image
 num_last_n: 8
-residual_aug: True
+residual_aug: False
 
 # Inputs
 # the folder of raw LiDAR scans

@@ -8,9 +8,9 @@ import numpy as np
 from glob import glob
 
 
-if __name__ == '__main__':
-    
-    path = "data/sequences/00/"
+if __name__ == "__main__":
+
+    path = "/home/ssd/kitti/dataset/sequences/00"
 
     save_path = os.path.join(path, "concate_residual")
 

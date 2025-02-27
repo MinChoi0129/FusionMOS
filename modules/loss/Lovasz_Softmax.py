@@ -17,6 +17,7 @@ The above copyright notice and this permission notice shall be included in all
 copies or substantial portions of the Software.
 
 """
+
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
@@ -43,8 +44,8 @@ def mean(l, ignore_nan=False, empty=0):
         n = 1
         acc = next(l)
     except StopIteration:
-        if empty == 'raise':
-            raise ValueError('Empty mean')
+        if empty == "raise":
+            raise ValueError("Empty mean")
         return empty
     for n, v in enumerate(l, 2):
         acc += v
@@ -62,13 +63,13 @@ def lovasz_grad(gt_sorted):
     gts = gt_sorted.sum()
     intersection = gts - gt_sorted.float().cumsum(0)
     union = gts + (1 - gt_sorted).float().cumsum(0)
-    jaccard = 1. - intersection / union
+    jaccard = 1.0 - intersection / union
     if p > 1:  # cover 1-pixel case
         jaccard[1:p] = jaccard[1:p] - jaccard[0:-1]
     return jaccard
 
 
-def lovasz_softmax(probas, labels, classes='present', per_image=False, ignore=None):
+def lovasz_softmax(probas, labels, classes="present", per_image=False, ignore=None):
     """
     Multi-class Lovasz-Softmax loss
       probas: [B, C, H, W] Variable, class probabilities at each prediction (between 0 and 1).
@@ -79,14 +80,21 @@ def lovasz_softmax(probas, labels, classes='present', per_image=False, ignore=No
       ignore: void class labels
     """
     if per_image:
-        loss = mean(lovasz_softmax_flat(*flatten_probas(prob.unsqueeze(0), lab.unsqueeze(0), ignore), classes=classes)
-                    for prob, lab in zip(probas, labels))
+        loss = mean(
+            lovasz_softmax_flat(
+                *flatten_probas(prob.unsqueeze(0), lab.unsqueeze(0), ignore),
+                classes=classes
+            )
+            for prob, lab in zip(probas, labels)
+        )
     else:
-        loss = lovasz_softmax_flat(*flatten_probas(probas, labels, ignore), classes=classes)
+        loss = lovasz_softmax_flat(
+            *flatten_probas(probas, labels, ignore), classes=classes
+        )
     return loss
 
 
-def lovasz_softmax_flat(probas, labels, classes='present'):
+def lovasz_softmax_flat(probas, labels, classes="present"):
     """
     Multi-class Lovasz-Softmax loss
       probas: [P, C] Variable, class probabilities at each prediction (between 0 and 1)
@@ -95,17 +103,17 @@ def lovasz_softmax_flat(probas, labels, classes='present'):
     """
     if probas.numel() == 0:
         # only void pixels, the gradients should be 0
-        return probas * 0.
+        return probas * 0.0
     C = probas.size(1)
     losses = []
-    class_to_sum = list(range(C)) if classes in ['all', 'present'] else classes
+    class_to_sum = list(range(C)) if classes in ["all", "present"] else classes
     for c in class_to_sum:
         fg = (labels == c).float()  # foreground for class c
-        if (classes == 'present' and fg.sum() == 0):
+        if classes == "present" and fg.sum() == 0:
             continue
         if C == 1:
             if len(classes) > 1:
-                raise ValueError('Sigmoid output possible only with 1 class')
+                raise ValueError("Sigmoid output possible only with 1 class")
             class_pred = probas[:, 0]
         else:
             class_pred = probas[:, c]
@@ -130,14 +138,14 @@ def flatten_probas(probas, labels, ignore=None):
     labels = labels.view(-1)
     if ignore is None:
         return probas, labels
-    valid = (labels != ignore)
+    valid = labels != ignore
     vprobas = probas[valid.nonzero(as_tuple=False).squeeze()]
     vlabels = labels[valid]
     return vprobas, vlabels
 
 
 class Lovasz_softmax(nn.Module):
-    def __init__(self, classes='present', per_image=False, ignore=None):
+    def __init__(self, classes="present", per_image=False, ignore=None):
         super(Lovasz_softmax, self).__init__()
         self.classes = classes
         self.per_image = per_image
@@ -150,7 +158,7 @@ class Lovasz_softmax(nn.Module):
 # Used to calculate Lovasz Loss with point cloud as input
 # Add by Jiadai Sun
 class Lovasz_softmax_PointCloud(nn.Module):
-    def __init__(self, classes='present', ignore=None):
+    def __init__(self, classes="present", ignore=None):
         super(Lovasz_softmax_PointCloud, self).__init__()
         self.classes = classes
         self.ignore = ignore
@@ -161,7 +169,7 @@ class Lovasz_softmax_PointCloud(nn.Module):
         probas = probas.permute(0, 2, 1).contiguous().view(-1, C)
         labels = labels.view(-1)
         if self.ignore is not None:
-            valid = (labels != self.ignore)
+            valid = labels != self.ignore
             vprobas = probas[valid.nonzero(as_tuple=False).squeeze()]
             vlabels = labels[valid]
             return lovasz_softmax_flat(vprobas, vlabels, classes=self.classes)

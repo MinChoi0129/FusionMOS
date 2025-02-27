@@ -1,6 +1,6 @@
 #!/bin/bash
 
-DatasetPath=DATAROOT
+DatasetPath=/home/work_docker/KITTI/dataset
 PredictionsPath=./log/Valid/predictions/
 DataConfig=./config/labels/semantic-kitti-mos.raw.yaml
 

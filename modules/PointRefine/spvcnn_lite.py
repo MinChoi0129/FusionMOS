@@ -12,22 +12,22 @@ from torchsparse.nn.utils import get_kernel_offsets
 # return: SparseTensor
 def initial_voxelize(z, init_res, after_res):
     new_float_coord = torch.cat(
-        [(z.C[:, :3] * init_res) / after_res, z.C[:, -1].view(-1, 1)], 1)
+        [(z.C[:, :3] * init_res) / after_res, z.C[:, -1].view(-1, 1)], 1
+    )
 
     pc_hash = F.sphash(torch.floor(new_float_coord).int())
     sparse_hash = torch.unique(pc_hash)
     idx_query = F.sphashquery(pc_hash, sparse_hash)
     counts = F.spcount(idx_query.int(), len(sparse_hash))
 
-    inserted_coords = F.spvoxelize(torch.floor(new_float_coord), idx_query,
-                                   counts)
+    inserted_coords = F.spvoxelize(torch.floor(new_float_coord), idx_query, counts)
     inserted_coords = torch.round(inserted_coords).int()
     inserted_feat = F.spvoxelize(z.F, idx_query, counts)
 
     new_tensor = SparseTensor(inserted_feat, inserted_coords, 1)
     new_tensor.cmaps.setdefault(new_tensor.stride, new_tensor.coords)
-    z.additional_features['idx_query'][1] = idx_query
-    z.additional_features['counts'][1] = counts
+    z.additional_features["idx_query"][1] = idx_query
+    z.additional_features["counts"][1] = counts
     z.C = new_float_coord
 
     return new_tensor
@@ -36,22 +36,28 @@ def initial_voxelize(z, init_res, after_res):
 # x: SparseTensor, z: PointTensor
 # return: SparseTensor
 def point_to_voxel(x, z):
-    if z.additional_features is None or z.additional_features.get(
-            'idx_query') is None or z.additional_features['idx_query'].get(
-                x.s) is None:
+    if (
+        z.additional_features is None
+        or z.additional_features.get("idx_query") is None
+        or z.additional_features["idx_query"].get(x.s) is None
+    ):
         pc_hash = F.sphash(
-            torch.cat([
-                torch.floor(z.C[:, :3] / x.s[0]).int() * x.s[0],
-                z.C[:, -1].int().view(-1, 1)
-            ], 1))
+            torch.cat(
+                [
+                    torch.floor(z.C[:, :3] / x.s[0]).int() * x.s[0],
+                    z.C[:, -1].int().view(-1, 1),
+                ],
+                1,
+            )
+        )
         sparse_hash = F.sphash(x.C)
         idx_query = F.sphashquery(pc_hash, sparse_hash)
         counts = F.spcount(idx_query.int(), x.C.shape[0])
-        z.additional_features['idx_query'][x.s] = idx_query
-        z.additional_features['counts'][x.s] = counts
+        z.additional_features["idx_query"][x.s] = idx_query
+        z.additional_features["counts"][x.s] = counts
     else:
-        idx_query = z.additional_features['idx_query'][x.s]
-        counts = z.additional_features['counts'][x.s]
+        idx_query = z.additional_features["idx_query"][x.s]
+        counts = z.additional_features["counts"][x.s]
 
     inserted_feat = F.spvoxelize(z.F, idx_query, counts)
     new_tensor = SparseTensor(inserted_feat, x.C, x.s)
@@ -64,27 +70,36 @@ def point_to_voxel(x, z):
 # x: SparseTensor, z: PointTensor
 # return: PointTensor
 def voxel_to_point(x, z, nearest=False):
-    if z.idx_query is None or z.weights is None or z.idx_query.get(
-            x.s) is None or z.weights.get(x.s) is None:
+    if (
+        z.idx_query is None
+        or z.weights is None
+        or z.idx_query.get(x.s) is None
+        or z.weights.get(x.s) is None
+    ):
         off = get_kernel_offsets(2, x.s, 1, device=z.F.device)
         old_hash = F.sphash(
-            torch.cat([
-                torch.floor(z.C[:, :3] / x.s[0]).int() * x.s[0],
-                z.C[:, -1].int().view(-1, 1)
-            ], 1), off)
+            torch.cat(
+                [
+                    torch.floor(z.C[:, :3] / x.s[0]).int() * x.s[0],
+                    z.C[:, -1].int().view(-1, 1),
+                ],
+                1,
+            ),
+            off,
+        )
         pc_hash = F.sphash(x.C.to(z.F.device))
         idx_query = F.sphashquery(old_hash, pc_hash)
-        weights = F.calc_ti_weights(z.C, idx_query,
-                                    scale=x.s[0]).transpose(0, 1).contiguous()
+        weights = (
+            F.calc_ti_weights(z.C, idx_query, scale=x.s[0]).transpose(0, 1).contiguous()
+        )
         idx_query = idx_query.transpose(0, 1).contiguous()
         if nearest:
-            weights[:, 1:] = 0.
+            weights[:, 1:] = 0.0
             idx_query[:, 1:] = -1
         new_feat = F.spdevoxelize(x.F, idx_query, weights)
-        new_tensor = PointTensor(new_feat,
-                                 z.C,
-                                 idx_query=z.idx_query,
-                                 weights=z.weights)
+        new_tensor = PointTensor(
+            new_feat, z.C, idx_query=z.idx_query, weights=z.weights
+        )
         new_tensor.additional_features = z.additional_features
         new_tensor.idx_query[x.s] = idx_query
         new_tensor.weights[x.s] = weights
@@ -93,10 +108,9 @@ def voxel_to_point(x, z, nearest=False):
 
     else:
         new_feat = F.spdevoxelize(x.F, z.idx_query.get(x.s), z.weights.get(x.s))
-        new_tensor = PointTensor(new_feat,
-                                 z.C,
-                                 idx_query=z.idx_query,
-                                 weights=z.weights)
+        new_tensor = PointTensor(
+            new_feat, z.C, idx_query=z.idx_query, weights=z.weights
+        )
         new_tensor.additional_features = z.additional_features
 
     return new_tensor
@@ -107,11 +121,7 @@ class BasicConvolutionBlock(nn.Module):
     def __init__(self, inc, outc, ks=3, stride=1, dilation=1):
         super().__init__()
         self.net = nn.Sequential(
-            spnn.Conv3d(inc,
-                        outc,
-                        kernel_size=ks,
-                        dilation=dilation,
-                        stride=stride),
+            spnn.Conv3d(inc, outc, kernel_size=ks, dilation=dilation, stride=stride),
             spnn.BatchNorm(outc),
             spnn.ReLU(True),
         )
@@ -126,11 +136,7 @@ class BasicDeconvolutionBlock(nn.Module):
     def __init__(self, inc, outc, ks=3, stride=1):
         super().__init__()
         self.net = nn.Sequential(
-            spnn.Conv3d(inc,
-                        outc,
-                        kernel_size=ks,
-                        stride=stride,
-                        transposed=True),
+            spnn.Conv3d(inc, outc, kernel_size=ks, stride=stride, transposed=True),
             spnn.BatchNorm(outc),
             spnn.ReLU(True),
         )
@@ -144,15 +150,10 @@ class ResidualBlock(nn.Module):
     def __init__(self, inc, outc, ks=3, stride=1, dilation=1):
         super().__init__()
         self.net = nn.Sequential(
-            spnn.Conv3d(inc,
-                        outc,
-                        kernel_size=ks,
-                        dilation=dilation,
-                        stride=stride),
+            spnn.Conv3d(inc, outc, kernel_size=ks, dilation=dilation, stride=stride),
             spnn.BatchNorm(outc),
             spnn.ReLU(True),
-            spnn.Conv3d(outc, outc, kernel_size=ks, dilation=dilation,
-                        stride=1),
+            spnn.Conv3d(outc, outc, kernel_size=ks, dilation=dilation, stride=1),
             spnn.BatchNorm(outc),
         )
 
@@ -160,8 +161,7 @@ class ResidualBlock(nn.Module):
             self.downsample = nn.Identity()
         else:
             self.downsample = nn.Sequential(
-                spnn.Conv3d(inc, outc, kernel_size=1, dilation=1,
-                            stride=stride),
+                spnn.Conv3d(inc, outc, kernel_size=1, dilation=1, stride=stride),
                 spnn.BatchNorm(outc),
             )
 
@@ -182,16 +182,17 @@ class SPVCNN(nn.Module):
         cs = [32, 64, 128, 96, 96]
         # cs = [int(cr * x) for x in cs]
 
-        if 'pres' in kwargs and 'vres' in kwargs:
-            self.pres = kwargs['pres']
-            self.vres = kwargs['vres']
+        if "pres" in kwargs and "vres" in kwargs:
+            self.pres = kwargs["pres"]
+            self.vres = kwargs["vres"]
 
         self.stem = nn.Sequential(
             # spnn.Conv3d(4, cs[0], kernel_size=3, stride=1),
             # spnn.BatchNorm(cs[0]), spnn.ReLU(True),
             spnn.Conv3d(cs[0], cs[0], kernel_size=3, stride=1),
             spnn.BatchNorm(cs[0]),
-            spnn.ReLU(True))
+            spnn.ReLU(True),
+        )
 
         self.stage1 = nn.Sequential(
             BasicConvolutionBlock(cs[0], cs[0], ks=2, stride=2, dilation=1),
@@ -205,36 +206,42 @@ class SPVCNN(nn.Module):
             ResidualBlock(cs[2], cs[2], ks=3, stride=1, dilation=1),
         )
 
-        self.up1 = nn.ModuleList([
-            BasicDeconvolutionBlock(cs[2], cs[3], ks=2, stride=2),
-            nn.Sequential(
-                ResidualBlock(cs[3] + cs[1], cs[3], ks=3, stride=1, dilation=1),
-                ResidualBlock(cs[3], cs[3], ks=3, stride=1, dilation=1),
-            )
-        ])
+        self.up1 = nn.ModuleList(
+            [
+                BasicDeconvolutionBlock(cs[2], cs[3], ks=2, stride=2),
+                nn.Sequential(
+                    ResidualBlock(cs[3] + cs[1], cs[3], ks=3, stride=1, dilation=1),
+                    ResidualBlock(cs[3], cs[3], ks=3, stride=1, dilation=1),
+                ),
+            ]
+        )
 
-        self.up2 = nn.ModuleList([
-            BasicDeconvolutionBlock(cs[3], cs[4], ks=2, stride=2),
-            nn.Sequential(
-                ResidualBlock(cs[4] + cs[0], cs[4], ks=3, stride=1, dilation=1),
-                ResidualBlock(cs[4], cs[4], ks=3, stride=1, dilation=1),
-            )
-        ])
+        self.up2 = nn.ModuleList(
+            [
+                BasicDeconvolutionBlock(cs[3], cs[4], ks=2, stride=2),
+                nn.Sequential(
+                    ResidualBlock(cs[4] + cs[0], cs[4], ks=3, stride=1, dilation=1),
+                    ResidualBlock(cs[4], cs[4], ks=3, stride=1, dilation=1),
+                ),
+            ]
+        )
 
-        self.classifier = nn.Sequential(nn.Linear(cs[4], kwargs['num_classes']))
+        self.classifier = nn.Sequential(nn.Linear(cs[4], kwargs["num_classes"]))
 
-        self.point_transforms = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(cs[0], cs[2]),
-                nn.BatchNorm1d(cs[2]),
-                nn.ReLU(True),
-            ),
-            nn.Sequential(
-                nn.Linear(cs[2], cs[4]),
-                nn.BatchNorm1d(cs[4]),
-                nn.ReLU(True),
-            )
-        ])
+        self.point_transforms = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(cs[0], cs[2]),
+                    nn.BatchNorm1d(cs[2]),
+                    nn.ReLU(True),
+                ),
+                nn.Sequential(
+                    nn.Linear(cs[2], cs[4]),
+                    nn.BatchNorm1d(cs[4]),
+                    nn.ReLU(True),
+                ),
+            ]
+        )
 
         self.weight_initialization()
         self.dropout = nn.Dropout(0.3, True)
@@ -244,7 +251,6 @@ class SPVCNN(nn.Module):
             if isinstance(m, nn.BatchNorm1d):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
-
 
     def forward(self, x):
         # x: SparseTensor z: PointTensor

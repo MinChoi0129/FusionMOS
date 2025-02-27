@@ -6,7 +6,7 @@ import numpy as np
 import open3d as o3d
 from kitti_utils import load_vertex, load_labels
 
-if __name__ == '__main__':
+if __name__ == "__main__":
 
     seq = "08"
     frame_id = [98, 218, 222, 1630, 1641, 4016]
@@ -16,21 +16,21 @@ if __name__ == '__main__':
         "gtlabel": data_path,
         "method1": "/the prediction result of method_1",
         "method2": "/the prediction result of method_2",
-        "ours": "/the prediction result of ours"
+        "ours": "/the prediction result of ours",
     }
 
     for f_id in frame_id:
         str_fid = "%06d" % (f_id)
         print(str_fid)
 
-        scan_path = f'{data_path}/sequences/{seq}/velodyne/{str_fid}.bin'
+        scan_path = f"{data_path}/sequences/{seq}/velodyne/{str_fid}.bin"
         scan = load_vertex(scan_path)
 
         for key, value in path.items():
-            if key == 'gtlabel':
-                label_path = f'{value}/sequences/{seq}/labels/{str_fid}.label'
+            if key == "gtlabel":
+                label_path = f"{value}/sequences/{seq}/labels/{str_fid}.label"
             else:
-                label_path = f'{value}/sequences/{seq}/predictions/{str_fid}.label'
+                label_path = f"{value}/sequences/{seq}/predictions/{str_fid}.label"
 
             print(key)
             label, _ = load_labels(label_path)
@@ -45,7 +45,8 @@ if __name__ == '__main__':
 
             vis = o3d.visualization.Visualizer()
             vis.create_window(
-                window_name=f'{key}_seq{seq}_frame{f_id}', width=1000, height=1000)
+                window_name=f"{key}_seq{seq}_frame{f_id}", width=1000, height=1000
+            )
             vis.add_geometry(pcd)
             # parameters = o3d.io.read_pinhole_camera_parameters("/home/user/Repo/LiDAR-MOS/ScreenCamera_2022-02-20-21-03-42.json")
             # ctr = vis.get_view_control()

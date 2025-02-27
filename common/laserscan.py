@@ -9,12 +9,25 @@ from scipy.spatial.transform import Rotation as R
 # import math
 # import time
 
-class LaserScan:
-    """ Class that contains LaserScan with x,y,z,r,intensity """
-    EXTENSIONS_SCAN = ['.bin']
 
-    def __init__(self, project=False, H=64, W=1024, fov_up=3.0, fov_down=-25.0, DA=False,
-                 flip_sign=False, rot=False, drop_points=False, use_normal=False):
+class LaserScan:
+    """Class that contains LaserScan with x,y,z,r,intensity"""
+
+    EXTENSIONS_SCAN = [".bin"]
+
+    def __init__(
+        self,
+        project=False,
+        H=64,
+        W=1024,
+        fov_up=3.0,
+        fov_down=-25.0,
+        DA=False,
+        flip_sign=False,
+        rot=False,
+        drop_points=False,
+        use_normal=False,
+    ):
         self.project = project
         self.proj_H = H
         self.proj_W = W
@@ -29,7 +42,7 @@ class LaserScan:
         self.reset()
 
     def reset(self):
-        """ Reset scan members. """
+        """Reset scan members."""
         self.points = np.zeros((0, 3), dtype=np.float32)  # [m, 3]: x, y, z
         self.remissions = np.zeros((0, 1), dtype=np.float32)  # [m ,1]: remission
 
@@ -54,27 +67,30 @@ class LaserScan:
         self.proj_y = np.zeros((0, 1), dtype=np.int32)  # [m, 1]: y
 
         # mask containing for each pixel, if it contains a point or not
-        self.proj_mask = np.zeros((self.proj_H, self.proj_W), dtype=np.int32)  # [H,W] mask
+        self.proj_mask = np.zeros(
+            (self.proj_H, self.proj_W), dtype=np.int32
+        )  # [H,W] mask
         # if self.use_normal:
         #     self.proj_vertex = np.full((self.proj_H, self.proj_W, 3), -1, dtype=np.float32)
 
     def size(self):
-        """ Return the size of the point cloud. """
+        """Return the size of the point cloud."""
         return self.points.shape[0]
 
     def __len__(self):
         return self.size()
 
     def open_scan(self, filename, from_pose, to_pose, if_transform=True):
-        """ Open raw scan and fill in attributes
-        """
+        """Open raw scan and fill in attributes"""
         # reset just in case there was an open structure
         self.reset()
 
         # check filename is string
         if not isinstance(filename, str):
-            raise TypeError("Filename should be string type, "
-                            "but was {type}".format(type=str(type(filename))))
+            raise TypeError(
+                "Filename should be string type, "
+                "but was {type}".format(type=str(type(filename)))
+            )
 
         # check extension is a laserscan
         if not any(filename.endswith(ext) for ext in self.EXTENSIONS_SCAN):
@@ -92,22 +108,25 @@ class LaserScan:
         hom_points = np.ones(scan.shape)
         hom_points[:, :-1] = points
         if if_transform:
-            points_transformed = np.linalg.inv(to_pose).dot(from_pose).dot(hom_points.T).T
+            points_transformed = (
+                np.linalg.inv(to_pose).dot(from_pose).dot(hom_points.T).T
+            )
         else:
             points_transformed = hom_points
         """"""
         points = points_transformed[:, :3]
         remissions = scan[:, 3]  # get remission
         if self.drop_points is not False:
-            self.points_to_drop = np.random.randint(0, len(points)-1,int(len(points)*self.drop_points))
-            points = np.delete(points,self.points_to_drop,axis=0)
-            remissions = np.delete(remissions,self.points_to_drop)
+            self.points_to_drop = np.random.randint(
+                0, len(points) - 1, int(len(points) * self.drop_points)
+            )
+            points = np.delete(points, self.points_to_drop, axis=0)
+            remissions = np.delete(remissions, self.points_to_drop)
 
         self.set_points(points, remissions)
 
     def set_points(self, points, remissions=None):
-        """ Set scan attributes (instead of opening from file)
-        """
+        """Set scan attributes (instead of opening from file)"""
         # reset just in case there was an open structure
         self.reset()
 
@@ -124,7 +143,7 @@ class LaserScan:
         if self.flip_sign:
             self.points[:, 1] = -self.points[:, 1]
         if self.DA:
-            jitter_x = random.uniform(-5,5)
+            jitter_x = random.uniform(-5, 5)
             jitter_y = random.uniform(-3, 3)
             jitter_z = random.uniform(-1, 0)
             self.points[:, 0] += jitter_x
@@ -134,7 +153,7 @@ class LaserScan:
             self.points = self.points @ R.random(random_state=1234).as_dcm().T
         if remissions is not None:
             self.remissions = remissions  # get remission
-            #if self.DA:
+            # if self.DA:
             #    self.remissions = self.remissions[::-1].copy()
         else:
             self.remissions = np.zeros((points.shape[0]), dtype=np.float32)
@@ -144,10 +163,10 @@ class LaserScan:
             self.do_range_projection()
 
     def do_range_projection(self):
-        """ Project a pointcloud into a spherical projection image.projection.
-            Function takes no arguments because it can be also called externally
-            if the value of the constructor was not set (in case you change your
-            mind about wanting the projection)
+        """Project a pointcloud into a spherical projection image.projection.
+        Function takes no arguments because it can be also called externally
+        if the value of the constructor was not set (in case you change your
+        mind about wanting the projection)
         """
         # laser parameters
         fov_up = self.proj_fov_up / 180.0 * np.pi  # field of view up in rad
@@ -215,43 +234,47 @@ class LaserScan:
 
             # Plan B:
             normals = self.gen_normal_map_open3d(points=points)
-            self.normal_map = np.full((self.proj_H, self.proj_W, 3), -1, dtype=np.float32)
+            self.normal_map = np.full(
+                (self.proj_H, self.proj_W, 3), -1, dtype=np.float32
+            )
             self.normal_map[proj_y, proj_x] = normals
 
     def gen_normal_map_open3d(self, points):
-        # If numpy is 1.18.1 (open3d 0.9.0 py3.7), estimate_normals will leak memory, 
+        # If numpy is 1.18.1 (open3d 0.9.0 py3.7), estimate_normals will leak memory,
         #  and then I updated it to 1.19.4 according to the issue below
         #  https://github.com/isl-org/Open3D/issues/1787
         #  https://github.com/isl-org/Open3D/issues/2107
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(points)
         # Calculate normal, search radius 20cm, only consider 15 points in the neighborhood
-        pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.2, max_nn=15))
+        pcd.estimate_normals(
+            search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.2, max_nn=15)
+        )
         ## Calculate normals, considering only 20 points in the neighborhood
         # pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamKNN(knn=10))
         normals = np.asarray(pcd.normals)
         del pcd
-        return normals #np.asarray(pcd.normals)
+        return normals  # np.asarray(pcd.normals)
 
     # This function refers to https://github.com/PRBonn/range-mcl ,
     #  but it runs very slowly
     def gen_normal_map(self, current_range, current_vertex, proj_H=64, proj_W=900):
-        """ Generate a normal image given the range projection of a point cloud.
-            Args:
-            current_range:  range projection of a point cloud, each pixel contains the corresponding depth
-            current_vertex: range projection of a point cloud,
-                            each pixel contains the corresponding point (x, y, z, 1)
-            Returns:
-            normal_data: each pixel contains the corresponding normal
+        """Generate a normal image given the range projection of a point cloud.
+        Args:
+        current_range:  range projection of a point cloud, each pixel contains the corresponding depth
+        current_vertex: range projection of a point cloud,
+                        each pixel contains the corresponding point (x, y, z, 1)
+        Returns:
+        normal_data: each pixel contains the corresponding normal
         """
+
         def wrap(x, dim):
-            """ Wrap the boarder of the range image.
-            """
+            """Wrap the boarder of the range image."""
             value = x
             if value >= dim:
-                value = (value - dim)
+                value = value - dim
             if value < 0:
-                value = (value + dim)
+                value = value + dim
             return value
 
         normal_data = np.full((proj_H, proj_W, 3), -1, dtype=np.float32)
@@ -285,15 +308,37 @@ class LaserScan:
 
         return normal_data
 
+
 class SemLaserScan(LaserScan):
     """Class that contains LaserScan with x,y,z,r,sem_label,sem_color_label,inst_label,inst_color_label"""
-    EXTENSIONS_LABEL = ['.label']
 
-    def __init__(self, sem_color_dict=None, project=False,
-                 H=64, W=1024, fov_up=3.0, fov_down=-25.0, max_classes=300,
-                 DA=False, flip_sign=False, drop_points=False, use_normal=False):
-        super(SemLaserScan, self).__init__(project, H, W, fov_up, fov_down, DA=DA,
-                                           flip_sign=flip_sign, drop_points=drop_points, use_normal=use_normal)
+    EXTENSIONS_LABEL = [".label"]
+
+    def __init__(
+        self,
+        sem_color_dict=None,
+        project=False,
+        H=64,
+        W=1024,
+        fov_up=3.0,
+        fov_down=-25.0,
+        max_classes=300,
+        DA=False,
+        flip_sign=False,
+        drop_points=False,
+        use_normal=False,
+    ):
+        super(SemLaserScan, self).__init__(
+            project,
+            H,
+            W,
+            fov_up,
+            fov_down,
+            DA=DA,
+            flip_sign=flip_sign,
+            drop_points=drop_points,
+            use_normal=use_normal,
+        )
         self.reset()
 
         # make semantic colors
@@ -309,18 +354,22 @@ class SemLaserScan(LaserScan):
         else:
             # otherwise make random
             max_sem_key = max_classes
-            self.sem_color_lut = np.random.uniform(low=0.0, high=1.0, size=(max_sem_key, 3))
+            self.sem_color_lut = np.random.uniform(
+                low=0.0, high=1.0, size=(max_sem_key, 3)
+            )
             # force zero to a gray-ish color
             self.sem_color_lut[0] = np.full((3), 0.1)
 
         # make instance colors
         max_inst_id = 100000
-        self.inst_color_lut = np.random.uniform(low=0.0, high=1.0, size=(max_inst_id, 3))
+        self.inst_color_lut = np.random.uniform(
+            low=0.0, high=1.0, size=(max_inst_id, 3)
+        )
         # force zero to a gray-ish color
         self.inst_color_lut[0] = np.full((3), 0.1)
 
     def reset(self):
-        """ Reset scan members. """
+        """Reset scan members."""
         super(SemLaserScan, self).reset()
 
         # semantic labels
@@ -332,20 +381,32 @@ class SemLaserScan(LaserScan):
         self.inst_label_color = np.zeros((0, 3), dtype=np.float32)  # [m ,3]: color
 
         # projection color with semantic labels
-        self.proj_sem_label = np.zeros((self.proj_H, self.proj_W), dtype=np.int32)  # [H,W]  label
-        self.proj_sem_movable_label = np.zeros((self.proj_H, self.proj_W), dtype=np.int32)  # [H,W]  label
-        self.proj_sem_color = np.zeros((self.proj_H, self.proj_W, 3), dtype=np.float)  # [H,W,3] color
+        self.proj_sem_label = np.zeros(
+            (self.proj_H, self.proj_W), dtype=np.int32
+        )  # [H,W]  label
+        self.proj_sem_movable_label = np.zeros(
+            (self.proj_H, self.proj_W), dtype=np.int32
+        )  # [H,W]  label
+        self.proj_sem_color = np.zeros(
+            (self.proj_H, self.proj_W, 3), dtype=np.float
+        )  # [H,W,3] color
 
         # projection color with instance labels
-        self.proj_inst_label = np.zeros((self.proj_H, self.proj_W), dtype=np.int32)  # [H,W]  label
-        self.proj_inst_color = np.zeros((self.proj_H, self.proj_W, 3), dtype=np.float)  # [H,W,3] color
+        self.proj_inst_label = np.zeros(
+            (self.proj_H, self.proj_W), dtype=np.int32
+        )  # [H,W]  label
+        self.proj_inst_color = np.zeros(
+            (self.proj_H, self.proj_W, 3), dtype=np.float
+        )  # [H,W,3] color
 
     def open_label(self, filename):
-        """ Open raw scan and fill in attributes """
+        """Open raw scan and fill in attributes"""
         # check filename is string
         if not isinstance(filename, str):
-            raise TypeError("Filename should be string type, "
-                            "but was {type}".format(type=str(type(filename))))
+            raise TypeError(
+                "Filename should be string type, "
+                "but was {type}".format(type=str(type(filename)))
+            )
 
         # check extension is a laserscan
         if not any(filename.endswith(ext) for ext in self.EXTENSIONS_LABEL):
@@ -356,12 +417,12 @@ class SemLaserScan(LaserScan):
         label = label.reshape((-1))
 
         if self.drop_points is not False:
-            label = np.delete(label,self.points_to_drop)
+            label = np.delete(label, self.points_to_drop)
         # set it
         self.set_label(label)
 
     def set_label(self, label):
-        """ Set points for label not from file but from np """
+        """Set points for label not from file but from np"""
         # check label makes sense
         if not isinstance(label, np.ndarray):
             raise TypeError("Label should be numpy array")
@@ -376,13 +437,13 @@ class SemLaserScan(LaserScan):
             raise ValueError("Scan and Label don't contain same number of points")
 
         # sanity check
-        assert ((self.sem_label + (self.inst_label << 16) == label).all())
+        assert (self.sem_label + (self.inst_label << 16) == label).all()
 
         if self.project:
             self.do_label_projection()
 
     def colorize(self):
-        """ Colorize pointcloud with the color of each semantic label """
+        """Colorize pointcloud with the color of each semantic label"""
         self.sem_label_color = self.sem_color_lut[self.sem_label]
         self.sem_label_color = self.sem_label_color.reshape((-1, 3))
 
@@ -395,8 +456,12 @@ class SemLaserScan(LaserScan):
 
         # semantics
         self.proj_sem_label[mask] = self.sem_label[self.proj_idx[mask]]
-        self.proj_sem_color[mask] = self.sem_color_lut[self.sem_label[self.proj_idx[mask]]]
+        self.proj_sem_color[mask] = self.sem_color_lut[
+            self.sem_label[self.proj_idx[mask]]
+        ]
 
         # instances
         self.proj_inst_label[mask] = self.inst_label[self.proj_idx[mask]]
-        self.proj_inst_color[mask] = self.inst_color_lut[self.inst_label[self.proj_idx[mask]]]
+        self.proj_inst_color[mask] = self.inst_color_lut[
+            self.inst_label[self.proj_idx[mask]]
+        ]

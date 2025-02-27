@@ -21,7 +21,7 @@ train:
   
   # for mos
   residual: True # This needs to be the same as in the dataset params below!
-  residual_aug: True
+  residual_aug: False
   valid_residual_delta_t: 3
   n_input_scans: 8 # This needs to be the same as in the dataset params below!
 

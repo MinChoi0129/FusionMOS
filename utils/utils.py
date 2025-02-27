@@ -17,34 +17,39 @@ def remove_exponent(d):
 
 
 def millify(n, precision=0, drop_nulls=True, prefixes=[]):
-    millnames = ['', 'k', 'M', 'B', 'T', 'P', 'E', 'Z', 'Y']
+    millnames = ["", "k", "M", "B", "T", "P", "E", "Z", "Y"]
     if prefixes:
-        millnames = ['']
+        millnames = [""]
         millnames.extend(prefixes)
     n = float(n)
-    millidx = max(0, min(len(millnames) - 1,
-                         int(math.floor(0 if n == 0 else math.log10(abs(n)) / 3))))
-    result = '{:.{precision}f}'.format(n / 10**(3 * millidx), precision=precision)
+    millidx = max(
+        0,
+        min(
+            len(millnames) - 1, int(math.floor(0 if n == 0 else math.log10(abs(n)) / 3))
+        ),
+    )
+    result = "{:.{precision}f}".format(n / 10 ** (3 * millidx), precision=precision)
     if drop_nulls:
         result = remove_exponent(Decimal(result))
-    return '{0}{dx}'.format(result, dx=millnames[millidx])
+    return "{0}{dx}".format(result, dx=millnames[millidx])
 
 
 def str2bool(v):
     if isinstance(v, bool):
-       return v
-    if v.lower() in ('yes', 'true', 't', 'y'):
+        return v
+    if v.lower() in ("yes", "true", "t", "y"):
         return True
-    elif v.lower() in ('no', 'false', 'f', 'n'):
+    elif v.lower() in ("no", "false", "f", "n"):
         return False
     else:
-        raise argparse.ArgumentTypeError('Boolean expected')
+        raise argparse.ArgumentTypeError("Boolean expected")
 
 
 def load_yaml(path):
     try:
         print(f"\033[32m Opening arch config file {path}\033[0m")
-        yaml_data = yaml.safe_load(open(path, 'r'))
+        print("path:", path)
+        yaml_data = yaml.safe_load(open(path, "r"))
         return yaml_data
     except Exception as e:
         print(e)
@@ -62,7 +67,9 @@ def check_pretrained_dir(path):
         if os.path.isdir(path):
             print("\033[32m model folder exists! Using model from %s \033[0m" % (path))
         else:
-            print("\033[32m model folder doesnt exist! Start with random weights...\033[0m")
+            print(
+                "\033[32m model folder doesnt exist! Start with random weights...\033[0m"
+            )
     else:
         print("\033[32m No pretrained directory found.\033[0m")
 
@@ -122,15 +129,31 @@ def backup_to_logdir(FLAGS, pretrain_model=False):
         # Backup training code for later review
         code_backup_path = f"{FLAGS.log}/code"
         check_and_makedirs(code_backup_path)
-        os.system(f"cp -r {os.path.abspath(os.path.join(os.path.dirname(__file__), '../', '*.py'))} {code_backup_path}")
-        os.system(f"cp -r {os.path.abspath(os.path.join(os.path.dirname(__file__), '../', 'common'))} {code_backup_path}")
-        os.system(f"cp -r {os.path.abspath(os.path.join(os.path.dirname(__file__), '../', 'config'))} {code_backup_path}")
-        os.system(f"cp -r {os.path.abspath(os.path.join(os.path.dirname(__file__), '../', 'modules'))} {code_backup_path}")
-        os.system(f"cp -r {os.path.abspath(os.path.join(os.path.dirname(__file__), '../', 'script'))} {code_backup_path}")
-        os.system(f"cp -r {os.path.abspath(os.path.join(os.path.dirname(__file__), '../', 'train_yaml'))} {code_backup_path}")
-        os.system(f"cp -r {os.path.abspath(os.path.join(os.path.dirname(__file__), '../', 'utils'))} {code_backup_path}")
+        os.system(
+            f"cp -r {os.path.abspath(os.path.join(os.path.dirname(__file__), '../', '*.py'))} {code_backup_path}"
+        )
+        os.system(
+            f"cp -r {os.path.abspath(os.path.join(os.path.dirname(__file__), '../', 'common'))} {code_backup_path}"
+        )
+        os.system(
+            f"cp -r {os.path.abspath(os.path.join(os.path.dirname(__file__), '../', 'config'))} {code_backup_path}"
+        )
+        os.system(
+            f"cp -r {os.path.abspath(os.path.join(os.path.dirname(__file__), '../', 'modules'))} {code_backup_path}"
+        )
+        os.system(
+            f"cp -r {os.path.abspath(os.path.join(os.path.dirname(__file__), '../', 'script'))} {code_backup_path}"
+        )
+        os.system(
+            f"cp -r {os.path.abspath(os.path.join(os.path.dirname(__file__), '../', 'train_yaml'))} {code_backup_path}"
+        )
+        os.system(
+            f"cp -r {os.path.abspath(os.path.join(os.path.dirname(__file__), '../', 'utils'))} {code_backup_path}"
+        )
         if pretrain_model:
-            shutil.copyfile(FLAGS.pretrained + "/MFMOS_valid_best", FLAGS.log + "/MFMOS_valid_best")
+            shutil.copyfile(
+                FLAGS.pretrained + "/MFMOS_valid_best", FLAGS.log + "/MFMOS_valid_best"
+            )
 
     except Exception as e:
         print(e)
@@ -147,14 +170,18 @@ def make_predictions_dir(FLAGS, DATA, rm_old=False, save_movable=False):
             os.makedirs(FLAGS.log)
             os.makedirs(os.path.join(FLAGS.log, "sequences"))
         check_and_makedirs(os.path.join(FLAGS.log, "sequences"))
-        
+
         for seq in DATA["split"][FLAGS.split]:
-            seq = '{0:02d}'.format(int(seq))
+            seq = "{0:02d}".format(int(seq))
             print(f"{FLAGS.split} : {seq}")
             check_and_makedirs(os.path.join(FLAGS.log, "sequences", seq, "predictions"))
             if save_movable:
-                check_and_makedirs(os.path.join(FLAGS.log, "sequences", seq, "predictions_fuse"))
-                check_and_makedirs(os.path.join(FLAGS.log, "sequences", seq, "predictions_movable"))
+                check_and_makedirs(
+                    os.path.join(FLAGS.log, "sequences", seq, "predictions_fuse")
+                )
+                check_and_makedirs(
+                    os.path.join(FLAGS.log, "sequences", seq, "predictions_movable")
+                )
 
     except Exception as e:
         print(e)
@@ -172,46 +199,62 @@ def get_args(flags=None):
     elif flags == "infer":
         parser = argparse.ArgumentParser("./infer.py")
 
-    parser.add_argument(
-        '--local_rank', default=0, type=int
-    )
+    parser.add_argument("--local_rank", default=0, type=int)
 
     parser.add_argument(
-        '--dataset', '-d', type=str,
+        "--dataset",
+        "-d",
+        type=str,
         required=False,
         default="DATAROOT",
-        help='Dataset to train with. The parent directory of sequences. No Default.')
+        help="Dataset to train with. The parent directory of sequences. No Default.",
+    )
     parser.add_argument(
-        '--log', '-l', type=str,
-        default="./log/" + datetime.now().strftime("%Y-%-m-%d-%H:%M") + '/',
-        help='Directory to put the log data. Default: ./log_default/date+time')
+        "--log",
+        "-l",
+        type=str,
+        default="./log/" + datetime.now().strftime("%Y-%-m-%d-%H:%M") + "/",
+        help="Directory to put the log data. Default: ./log_default/date+time",
+    )
     parser.add_argument(
-        '--name', '-n', type=str,
+        "--name",
+        "-n",
+        type=str,
         default="",
-        help='If you want to give an aditional discriptive name')
+        help="If you want to give an aditional discriptive name",
+    )
     # parser.add_argument(
     #     '--uncertainty', '-u',
     #     required=False,
     #     type=str2bool, nargs='?',
     #     const=True, default=True,
     #     help='Set this if you want to use the Uncertainty Version')
-    
+
     if flags == "train":
         parser.add_argument(
-            '--pretrained', '-p', type=str,
+            "--pretrained",
+            "-p",
+            type=str,
             required=False,
             default=None,
-            help='Directory to get the pretrained model. If not passed, do from scratch!')
+            help="Directory to get the pretrained model. If not passed, do from scratch!",
+        )
         parser.add_argument(
-            '--arch_cfg', '-ac', type=str,
+            "--arch_cfg",
+            "-ac",
+            type=str,
             required=False,
             default="",
-            help='Architecture yaml cfg file. See /config/arch for sample. No default.')
+            help="Architecture yaml cfg file. See /config/arch for sample. No default.",
+        )
         parser.add_argument(
-            '--data_cfg', '-dc', type=str,
+            "--data_cfg",
+            "-dc",
+            type=str,
             required=False,
-            default='',
-            help='Classification yaml cfg file. See /config/labels for sample. No default.')
+            default="",
+            help="Classification yaml cfg file. See /config/labels for sample. No default.",
+        )
 
     if flags == "infer":
         # parser.add_argument(
@@ -219,27 +262,35 @@ def get_args(flags=None):
         #     type=int, default=30,
         #     help='Number of samplings per scan.')
         parser.add_argument(
-            '--model', '-m',
+            "--model",
+            "-m",
             type=str,
             required=True,
             default=None,
-            help='Directory to get the trained model.')
+            help="Directory to get the trained model.",
+        )
         parser.add_argument(
-            '--split', '-s',
+            "--split",
+            "-s",
             type=str,
             required=False,
             default=None,
-            help='Split to evaluate on. One of ' +
-            str(splits) + '. Defaults to %(default)s',)
+            help="Split to evaluate on. One of "
+            + str(splits)
+            + ". Defaults to %(default)s",
+        )
         parser.add_argument(
-            '--pointrefine', '-prf',
-            action='store_true',
+            "--pointrefine",
+            "-prf",
+            action="store_true",
             required=False,
-            help='Whether to use the PointHead module to refine predictions')
+            help="Whether to use the PointHead module to refine predictions",
+        )
         parser.add_argument(
-            '--movable',
-            action='store_true',
+            "--movable",
+            action="store_true",
             required=False,
-            help='Whether to save the label of movable objects')
+            help="Whether to save the label of movable objects",
+        )
 
     return parser

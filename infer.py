@@ -6,8 +6,8 @@ from utils.utils import *
 from modules.user import *
 from modules.user_refine import *
 
-if __name__ == '__main__':
-    
+if __name__ == "__main__":
+
     parser = get_args(flags="infer")
     FLAGS, unparsed = parser.parse_known_args()
 
@@ -25,14 +25,30 @@ if __name__ == '__main__':
     ARCH = load_yaml(FLAGS.model + "/arch_cfg.yaml")
     DATA = load_yaml(FLAGS.model + "/data_cfg.yaml")
 
-    make_predictions_dir(FLAGS, DATA, save_movable=FLAGS.movable) # create predictions file folder
-    check_model_dir(FLAGS.model)      # does model folder exist?
+    make_predictions_dir(
+        FLAGS, DATA, save_movable=FLAGS.movable
+    )  # create predictions file folder
+    check_model_dir(FLAGS.model)  # does model folder exist?
 
     # create user and infer dataset
     if not FLAGS.pointrefine:
-        user = User(ARCH, DATA, datadir=FLAGS.dataset, outputdir=FLAGS.log,
-                    modeldir=FLAGS.model, split=FLAGS.split, save_movable=FLAGS.movable)
+        user = User(
+            ARCH,
+            DATA,
+            datadir=FLAGS.dataset,
+            outputdir=FLAGS.log,
+            modeldir=FLAGS.model,
+            split=FLAGS.split,
+            save_movable=FLAGS.movable,
+        )
     else:
-        user = UserRefine(ARCH, DATA, datadir=FLAGS.dataset, outputdir=FLAGS.log,
-                          modeldir=FLAGS.model, split=FLAGS.split, save_movable=FLAGS.movable)
+        user = UserRefine(
+            ARCH,
+            DATA,
+            datadir=FLAGS.dataset,
+            outputdir=FLAGS.log,
+            modeldir=FLAGS.model,
+            split=FLAGS.split,
+            save_movable=FLAGS.movable,
+        )
     user.infer()

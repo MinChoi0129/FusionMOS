@@ -12,63 +12,64 @@ np.random.seed(0)
 
 
 def load_poses(pose_path):
-    """ Load ground truth poses (T_w_cam0) from file.
-        Args:
-            pose_path: (Complete) filename for the pose file
-        Returns:
-            A numpy array of size nx4x4 with n poses as 4x4 transformation
-            matrices
+    """Load ground truth poses (T_w_cam0) from file.
+    Args:
+        pose_path: (Complete) filename for the pose file
+    Returns:
+        A numpy array of size nx4x4 with n poses as 4x4 transformation
+        matrices
     """
     # Read and parse the poses
     poses = []
     try:
-        if '.txt' in pose_path:
-            with open(pose_path, 'r') as f:
+        if ".txt" in pose_path:
+            with open(pose_path, "r") as f:
                 lines = f.readlines()
                 for line in lines:
-                    T_w_cam0 = np.fromstring(line, dtype=float, sep=' ')
+                    T_w_cam0 = np.fromstring(line, dtype=float, sep=" ")
                     T_w_cam0 = T_w_cam0.reshape(3, 4)
                     T_w_cam0 = np.vstack((T_w_cam0, [0, 0, 0, 1]))
                     poses.append(T_w_cam0)
         else:
-            poses = np.load(pose_path)['arr_0']
+            poses = np.load(pose_path)["arr_0"]
 
     except FileNotFoundError:
-        print('Ground truth poses are not avaialble.')
+        print("Ground truth poses are not avaialble.")
 
     return np.array(poses)
 
 
 def load_calib(calib_path):
-    """ Load calibrations (T_cam_velo) from file.
-    """
+    """Load calibrations (T_cam_velo) from file."""
     # Read and parse the calibrations
     T_cam_velo = []
     try:
-        with open(calib_path, 'r') as f:
+        with open(calib_path, "r") as f:
             lines = f.readlines()
             for line in lines:
-                if 'Tr:' in line:
-                    line = line.replace('Tr:', '')
-                    T_cam_velo = np.fromstring(line, dtype=float, sep=' ')
+                if "Tr:" in line:
+                    line = line.replace("Tr:", "")
+                    T_cam_velo = np.fromstring(line, dtype=float, sep=" ")
                     T_cam_velo = T_cam_velo.reshape(3, 4)
                     T_cam_velo = np.vstack((T_cam_velo, [0, 0, 0, 1]))
 
     except FileNotFoundError:
-        print('Calibrations are not avaialble.')
+        print("Calibrations are not avaialble.")
 
     return np.array(T_cam_velo)
 
 
-def range_projection(current_vertex, fov_up=3.0, fov_down=-25.0, proj_H=64, proj_W=900, max_range=50):
-    """ Project a pointcloud into a spherical projection, range image.
-        Args:
-            current_vertex: raw point clouds
-        Returns:
-            proj_range: projected range image with depth, each pixel contains the corresponding depth
-            proj_vertex: each pixel contains the corresponding point (x, y, z, 1)
-            proj_intensity: each pixel contains the corresponding intensity
-            proj_idx: each pixel contains the corresponding index of the point in the raw point cloud
+def range_projection(
+    current_vertex, fov_up=3.0, fov_down=-25.0, proj_H=64, proj_W=900, max_range=50
+):
+    """Project a pointcloud into a spherical projection, range image.
+    Args:
+        current_vertex: raw point clouds
+    Returns:
+        proj_range: projected range image with depth, each pixel contains the corresponding depth
+        proj_vertex: each pixel contains the corresponding point (x, y, z, 1)
+        proj_intensity: each pixel contains the corresponding intensity
+        proj_idx: each pixel contains the corresponding index of the point in the raw point cloud
     """
     # laser parameters
     fov_up = fov_up / 180.0 * np.pi  # field of view up in radians
@@ -77,7 +78,9 @@ def range_projection(current_vertex, fov_up=3.0, fov_down=-25.0, proj_H=64, proj
 
     # get depth of all points
     depth = np.linalg.norm(current_vertex[:, :3], 2, axis=1)
-    current_vertex = current_vertex[(depth > 0) & (depth < max_range)]  # get rid of [0, 0, 0] points
+    current_vertex = current_vertex[
+        (depth > 0) & (depth < max_range)
+    ]  # get rid of [0, 0, 0] points
     depth = depth[(depth > 0) & (depth < max_range)]
 
     # get scan components
@@ -121,13 +124,23 @@ def range_projection(current_vertex, fov_up=3.0, fov_down=-25.0, proj_H=64, proj
     indices = np.arange(depth.shape[0])
     indices = indices[order]
 
-    proj_range = np.full((proj_H, proj_W), -1, dtype=np.float32)  # [H,W] range (-1 is no data)
-    proj_vertex = np.full((proj_H, proj_W, 4), -1, dtype=np.float32)  # [H,W] index (-1 is no data)
-    proj_idx = np.full((proj_H, proj_W), -1, dtype=np.int32)  # [H,W] index (-1 is no data)
-    proj_intensity = np.full((proj_H, proj_W), -1, dtype=np.float32)  # [H,W] index (-1 is no data)
+    proj_range = np.full(
+        (proj_H, proj_W), -1, dtype=np.float32
+    )  # [H,W] range (-1 is no data)
+    proj_vertex = np.full(
+        (proj_H, proj_W, 4), -1, dtype=np.float32
+    )  # [H,W] index (-1 is no data)
+    proj_idx = np.full(
+        (proj_H, proj_W), -1, dtype=np.int32
+    )  # [H,W] index (-1 is no data)
+    proj_intensity = np.full(
+        (proj_H, proj_W), -1, dtype=np.float32
+    )  # [H,W] index (-1 is no data)
 
     proj_range[proj_y, proj_x] = depth
-    proj_vertex[proj_y, proj_x] = np.array([scan_x, scan_y, scan_z, np.ones(len(scan_x))]).T
+    proj_vertex[proj_y, proj_x] = np.array(
+        [scan_x, scan_y, scan_z, np.ones(len(scan_x))]
+    ).T
     proj_idx[proj_y, proj_x] = indices
     proj_intensity[proj_y, proj_x] = intensity
 
@@ -135,13 +148,13 @@ def range_projection(current_vertex, fov_up=3.0, fov_down=-25.0, proj_H=64, proj
 
 
 def gen_normal_map(current_range, current_vertex, proj_H=64, proj_W=900):
-    """ Generate a normal image given the range projection of a point cloud.
-        Args:
-            current_range:  range projection of a point cloud, each pixel contains the corresponding depth
-            current_vertex: range projection of a point cloud,
-                                            each pixel contains the corresponding point (x, y, z, 1)
-        Returns:
-            normal_data: each pixel contains the corresponding normal
+    """Generate a normal image given the range projection of a point cloud.
+    Args:
+        current_range:  range projection of a point cloud, each pixel contains the corresponding depth
+        current_vertex: range projection of a point cloud,
+                                        each pixel contains the corresponding point (x, y, z, 1)
+    Returns:
+        normal_data: each pixel contains the corresponding normal
     """
     normal_data = np.full((proj_H, proj_W, 3), -1, dtype=np.float32)
 
@@ -176,26 +189,25 @@ def gen_normal_map(current_range, current_vertex, proj_H=64, proj_W=900):
 
 
 def wrap(x, dim):
-    """ Wrap the boarder of the range image.
-    """
+    """Wrap the boarder of the range image."""
     value = x
     if value >= dim:
-        value = (value - dim)
+        value = value - dim
     if value < 0:
-        value = (value + dim)
+        value = value + dim
     return value
 
 
 def euler_angles_from_rotation_matrix(R):
-    """ From the paper by Gregory G. Slabaugh, Computing Euler angles from a rotation matrix,
-        psi, theta, phi = roll pitch yaw (x, y, z).
-        Args:
-            R: rotation matrix, a 3x3 numpy array
-        Returns:
-            a tuple with the 3 values psi, theta, phi in radians
+    """From the paper by Gregory G. Slabaugh, Computing Euler angles from a rotation matrix,
+    psi, theta, phi = roll pitch yaw (x, y, z).
+    Args:
+        R: rotation matrix, a 3x3 numpy array
+    Returns:
+        a tuple with the 3 values psi, theta, phi in radians
     """
 
-    def isclose(x, y, rtol=1.e-5, atol=1.e-8):
+    def isclose(x, y, rtol=1.0e-5, atol=1.0e-8):
         return abs(x - y) <= atol + rtol * abs(y)
 
     phi = 0.0
@@ -214,12 +226,12 @@ def euler_angles_from_rotation_matrix(R):
 
 
 def load_vertex(scan_path):
-    """ Load 3D points of a scan. The fileformat is the .bin format used in
-        the KITTI dataset.
-        Args:
-            scan_path: the (full) filename of the scan file
-        Returns:
-            A nx4 numpy array of homogeneous points (x, y, z, 1).
+    """Load 3D points of a scan. The fileformat is the .bin format used in
+    the KITTI dataset.
+    Args:
+        scan_path: the (full) filename of the scan file
+    Returns:
+        A nx4 numpy array of homogeneous points (x, y, z, 1).
     """
     current_vertex = np.fromfile(scan_path, dtype=np.float32)
     current_vertex = current_vertex.reshape((-1, 4))
@@ -230,33 +242,35 @@ def load_vertex(scan_path):
 
 
 def load_files(folder):
-    """ Load all files in a folder and sort.
-    """
-    file_paths = [os.path.join(dp, f) for dp, dn, fn in os.walk(
-        os.path.expanduser(folder)) for f in fn]
+    """Load all files in a folder and sort."""
+    file_paths = [
+        os.path.join(dp, f)
+        for dp, dn, fn in os.walk(os.path.expanduser(folder))
+        for f in fn
+    ]
     file_paths.sort()
     return file_paths
 
 
 def rotation_matrix_from_euler_angles(yaw, degrees=True):
-    """ Generate rotation matrix given yaw angle.
-        Args:
-            yaw: yaw angle
-        Returns:
-            rotation matrix
+    """Generate rotation matrix given yaw angle.
+    Args:
+        yaw: yaw angle
+    Returns:
+        rotation matrix
     """
-    return R.from_euler('z', yaw, degrees=degrees).as_matrix()
+    return R.from_euler("z", yaw, degrees=degrees).as_matrix()
 
 
 def gen_transformation(yaw, translation):
-    """ Generate transformation from given yaw angle and translation.
-        Args:
-            current_range: range image
-            current_vertex: point clouds
-        Returns:
-            normal image
+    """Generate transformation from given yaw angle and translation.
+    Args:
+        current_range: range image
+        current_vertex: point clouds
+    Returns:
+        normal image
     """
-    rotation = R.from_euler('zyx', [[yaw, 0, 0]], degrees=True)
+    rotation = R.from_euler("zyx", [[yaw, 0, 0]], degrees=True)
     rotation = rotation.as_dcm()[0]
     transformation = np.identity(4)
     transformation[:3, :3] = rotation

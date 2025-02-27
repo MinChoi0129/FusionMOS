@@ -1,6 +1,6 @@
 #!/bin/bash
 
-DatasetPath=DATAROOT
+DatasetPath=/home/work_docker/KITTI/dataset
 Seq=08
 DataConfig=./config/labels/semantic-kitti-mos.raw.yaml
 Version=fuse # Version in ["moving", "movable", "fuse"] for predictions
