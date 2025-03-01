@@ -215,157 +215,103 @@ class User:
 
     def infer_subset(self, loader, to_orig_fn, cnn, knn):
 
-        # 평가 모드로 전환
+        # switch to evaluate mode
         self.model.eval()
 
-        # GPU 사용 시 캐시 비우기
+        # empty the cache to infer in high res
         if self.gpu:
             torch.cuda.empty_cache()
 
         with torch.no_grad():
+
             end = time.time()
 
             for i, (
-                (proj_full, bev_full),  # (13, H, W) / (13, H_bev, W_bev)
-                (proj_labels, proj_movable_labels),  # (H, W), (H, W)
-                (bev_labels, bev_movable_labels),  # (H_bev, W_bev), (H_bev, W_bev)
-                (path_seq, path_name, npoints),  # ex. '08', '000123.npy', 122319
-                (proj_x, proj_y),  # (150000, ), (150000, )
-                (bev_proj_x, bev_proj_y),  # (150000, ), (150000, )
-                (proj_range, bev_range),  # (64, 2048), (360, 360)
-                (unproj_range, bev_unproj_range),  # (150000, ), (150000, )
+                proj_in,
+                proj_mask,
+                _,
+                _,
+                path_seq,
+                path_name,
+                p_x,
+                p_y,
+                proj_range,
+                unproj_range,
+                _,
+                _,
+                _,
+                _,
+                npoints,
             ) in enumerate(tqdm(loader, ncols=80)):
-
-                # 데이터 자르기 (배치 크기가 1일 경우)
-                proj_x = proj_x[0, :npoints]
-                proj_y = proj_y[0, :npoints]
+                # first cut to rela size (batch size one allows it)
+                p_x = p_x[0, :npoints]
+                p_y = p_y[0, :npoints]
                 proj_range = proj_range[0, :npoints]
                 unproj_range = unproj_range[0, :npoints]
-
-                bev_proj_x = bev_proj_x[0, :npoints]
-                bev_proj_y = bev_proj_y[0, :npoints]
-                bev_range = bev_range[0, :npoints]
-                bev_unproj_range = bev_unproj_range[0, :npoints]
-
                 path_seq = path_seq[0]
                 path_name = path_name[0]
 
                 if self.gpu:
-                    proj_full = proj_full.cuda()
-                    bev_full = bev_full.cuda()
-                    proj_x = proj_x.cuda()
-                    proj_y = proj_y.cuda()
-                    bev_proj_x = bev_proj_x.cuda()
-                    bev_proj_y = bev_proj_y.cuda()
+                    proj_in = proj_in.cuda()
+                    p_x = p_x.cuda()
+                    p_y = p_y.cuda()
                     if self.post:
                         proj_range = proj_range.cuda()
                         unproj_range = unproj_range.cuda()
-                        bev_range = bev_range.cuda()
-                        bev_unproj_range = bev_unproj_range.cuda()
 
                 end = time.time()
-                # 모델 추론: 두 뷰에 대한 출력
-                range_moving, range_movable, bev_moving, bev_movable = self.model(
-                    proj_full, bev_full
-                )
+                # compute output
+                proj_output, _, movable_proj_output, _ = self.model(proj_in)
                 res = time.time() - end
                 cnn.append(res)
 
-                # 개별 뷰에 대해 argmax 계산 (확률 맵에서 최고 확률 클래스 선택)
-                proj_argmax = range_moving[0].argmax(dim=0)
-                bev_argmax = bev_moving[0].argmax(dim=0)
-                movable_proj_argmax = range_movable[0].argmax(dim=0)
-                movable_bev_argmax = bev_movable[0].argmax(dim=0)
-
-                # ======= Fusion 추가 =======
-                # 방법: 두 뷰의 확률을 단순 평균한 후, argmax 계산 (더 부드러운 결합)
-                fused_prob = (range_moving[0] + bev_moving[0]) / 2.0
-                fused_argmax = fused_prob.argmax(dim=0)
-
-                fused_movable_prob = (range_movable[0] + bev_movable[0]) / 2.0
-                fused_movable_argmax = fused_movable_prob.argmax(dim=0)
-                # ============================
+                proj_argmax = proj_output[0].argmax(dim=0)
+                movable_proj_argmax = movable_proj_output[0].argmax(dim=0)
 
                 if torch.cuda.is_available():
                     torch.cuda.synchronize()
                 end = time.time()
+                # print(f"Network seq {path_seq} scan {path_name} in {res} sec")
 
+                # if knn --> use knn to postprocess
+                # 	else put in original pointcloud using indexes
                 if self.post:
-                    # 후처리: 각 뷰별로 좌표 맵핑
                     unproj_argmax = self.post(
-                        proj_range, unproj_range, proj_argmax, proj_x, proj_y
-                    )
-                    bev_unproj_argmax = self.post(
-                        bev_range, bev_unproj_range, bev_argmax, bev_proj_x, bev_proj_y
-                    )
-                    fused_unproj_argmax = self.post(
-                        proj_range, unproj_range, fused_argmax, proj_x, proj_y
+                        proj_range, unproj_range, proj_argmax, p_x, p_y
                     )
                     if self.save_movable:
                         movable_unproj_argmax = self.post(
-                            proj_range,
-                            unproj_range,
-                            movable_proj_argmax,
-                            proj_x,
-                            proj_y,
-                        )
-                        bev_movable_unproj_argmax = self.post(
-                            bev_range,
-                            bev_unproj_range,
-                            movable_bev_argmax,
-                            bev_proj_x,
-                            bev_proj_y,
-                        )
-                        fused_movable_unproj_argmax = self.post(
-                            proj_range,
-                            unproj_range,
-                            fused_movable_argmax,
-                            proj_x,
-                            proj_y,
+                            proj_range, unproj_range, movable_proj_argmax, p_x, p_y
                         )
                 else:
-                    unproj_argmax = proj_argmax[proj_y, proj_x]
-                    bev_unproj_argmax = bev_argmax[bev_proj_y, bev_proj_x]
-                    fused_unproj_argmax = fused_argmax[proj_y, proj_x]
+                    unproj_argmax = proj_argmax[p_y, p_x]
                     if self.save_movable:
-                        movable_unproj_argmax = movable_proj_argmax[proj_y, proj_x]
-                        bev_movable_unproj_argmax = movable_bev_argmax[
-                            bev_proj_y, bev_proj_x
-                        ]
-                        fused_movable_unproj_argmax = fused_movable_argmax[
-                            proj_y, proj_x
-                        ]
+                        movable_unproj_argmax = movable_proj_argmax[p_y, p_x]
 
+                # measure elapsed time
                 if torch.cuda.is_available():
                     torch.cuda.synchronize()
                 res = time.time() - end
                 knn.append(res)
+                # print(f"KNN Infered seq {path_seq} scan {path_name} in {res} sec")
 
-                # === 개별 예측 저장 (Projection 뷰) ===
-                pred_np = unproj_argmax.cpu().numpy().reshape((-1)).astype(np.int32)
+                # save scan # get the first scan in batch and project scan
+                pred_np = unproj_argmax.cpu().numpy()
+                pred_np = pred_np.reshape((-1)).astype(np.int32)
+
+                # map to original label
                 pred_np = to_orig_fn(pred_np)
+
                 path = os.path.join(
                     self.outputdir, "sequences", path_seq, "predictions", path_name
                 )
                 pred_np.tofile(path)
 
-                # === Fusion 결과 저장 ===
-                fused_pred_np = (
-                    fused_unproj_argmax.cpu().numpy().reshape((-1)).astype(np.int32)
-                )
-                fused_pred_np = to_orig_fn(fused_pred_np)
-                path = os.path.join(
-                    self.outputdir, "sequences", path_seq, "predictions_fuse", path_name
-                )
-                fused_pred_np.tofile(path)
-
                 if self.save_movable:
-                    movable_pred_np = (
-                        movable_unproj_argmax.cpu()
-                        .numpy()
-                        .reshape((-1))
-                        .astype(np.int32)
-                    )
+                    movable_pred_np = movable_unproj_argmax.cpu().numpy()
+                    movable_pred_np = movable_pred_np.reshape((-1)).astype(np.int32)
+
+                    # map to original label
                     movable_pred_np = to_orig_fn(movable_pred_np, movable=True)
                     path = os.path.join(
                         self.outputdir,
@@ -376,20 +322,12 @@ class User:
                     )
                     movable_pred_np.tofile(path)
 
-                    fused_movable_pred_np = (
-                        fused_movable_unproj_argmax.cpu()
-                        .numpy()
-                        .reshape((-1))
-                        .astype(np.int32)
-                    )
-                    fused_movable_pred_np = to_orig_fn(
-                        fused_movable_pred_np, movable=True
-                    )
+                    movable_pred_np[np.where(pred_np == 251)] = 251
                     path = os.path.join(
                         self.outputdir,
                         "sequences",
                         path_seq,
-                        "predictions_movable_fuse",
+                        "predictions_fuse",
                         path_name,
                     )
-                    fused_movable_pred_np.tofile(path)
+                    movable_pred_np.tofile(path)

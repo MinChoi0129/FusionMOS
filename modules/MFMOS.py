@@ -217,10 +217,6 @@ class MFMOS(nn.Module):
             'params["dataset"]["sensor"]["img_prop"]["height"] :',
             params["dataset"]["sensor"]["img_prop"]["height"],
         )
-        print(
-            'params["dataset"]["sensor"]["img_prop"]["width"] :',
-            params["dataset"]["sensor"]["img_prop"]["width"],
-        )
 
         # Range Branch Encoder
         self.resBlock1 = ResBlock(
@@ -299,6 +295,13 @@ class MFMOS(nn.Module):
 
             self.conv1x1_layer4_channel_wise = nn.Conv2d(256, 256, 1, bias=True)
             self.conv1x1_layer4_spatial = nn.Conv2d(256, 1, 1, bias=True)
+
+            self.conv1x1_bev_channel_wise = nn.Conv2d(32, 32, 1, bias=True)
+            self.conv1x1_bev_spatial = nn.Conv2d(32, 1, 1, bias=True)
+            self.conv1x1_bev_layer1_channel_wise = nn.Conv2d(64, 64, 1, bias=True)
+            self.conv1x1_bev_layer1_spatial = nn.Conv2d(64, 1, 1, bias=True)
+            self.conv1x1_bev_layer2_channel_wise = nn.Conv2d(128, 128, 1, bias=True)
+            self.conv1x1_bev_layer2_spatial = nn.Conv2d(128, 1, 1, bias=True)
         else:
             pass
 
@@ -432,13 +435,35 @@ class MFMOS(nn.Module):
         bev_down0 = self.bev_downCntx(x_bev)
         bev_down0 = self.bev_downCntx2(bev_down0)
         bev_down0 = self.bev_downCntx3(bev_down0)
+        if self.use_attention == "MGA":
+            bev_down0 = self.encoder_attention_module_MGA_tmc(
+                bev_down0,
+                bev_down0,
+                self.conv1x1_bev_channel_wise,
+                self.conv1x1_bev_spatial,
+            )
 
-        # 3번 다운샘플
         bev_down1c, bev_down1b = self.bev_resBlock1(bev_down0)
-        bev_down2c, bev_down2b = self.bev_resBlock2(bev_down1c)
-        bev_down3c, bev_down3b = self.bev_resBlock3(bev_down2c)
+        if self.use_attention == "MGA":
+            bev_down1c = self.encoder_attention_module_MGA_tmc(
+                bev_down1c,
+                bev_down1c,
+                self.conv1x1_bev_layer1_channel_wise,
+                self.conv1x1_bev_layer1_spatial,
+            )
 
-        # 3번 업샘플
+        bev_down2c, bev_down2b = self.bev_resBlock2(bev_down1c)
+        if self.use_attention == "MGA":
+            bev_down2c = self.encoder_attention_module_MGA_tmc(
+                bev_down2c,
+                bev_down2c,
+                self.conv1x1_bev_layer2_channel_wise,
+                self.conv1x1_bev_layer2_spatial,
+            )
+
+        bev_down3c, bev_down3b = self.bev_resBlock3(bev_down2c)
+        # (원하는 경우 여기서도 추가 attention 적용 가능)
+
         bev_up2e = self.bev_upBlock1(bev_down3c, bev_down3b)
         bev_up1e = self.bev_upBlock2(bev_up2e, bev_down2b)
         bev_up0e = self.bev_upBlock3(bev_up1e, bev_down1b)
@@ -450,4 +475,4 @@ class MFMOS(nn.Module):
         movable_bev_logits = F.softmax(movable_bev_logits_, dim=1)
 
         # 4가지 출력 (quad branch)
-        return movable_logits, logits, movable_bev_logits, bev_logits
+        return logits, movable_logits, bev_logits, movable_bev_logits

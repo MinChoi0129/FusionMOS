@@ -175,6 +175,7 @@ class LaserScan:
 
         # get depth of all points
         depth = np.linalg.norm(self.points, 2, axis=1)
+        depth[depth == 0] = 1e-6  # Zero division 방지
 
         # get scan components
         scan_x = self.points[:, 0]

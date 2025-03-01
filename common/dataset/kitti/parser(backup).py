@@ -2,11 +2,10 @@ import os
 import numpy as np
 import torch
 from torch.utils.data import Dataset
-from common.laserscan import SemLaserScan
+from common.laserscan import LaserScan, SemLaserScan
 
 import torch
 import random
-import h5py
 
 from collections.abc import Sequence, Iterable
 from common.dataset.kitti.utils import load_poses, load_calib
@@ -80,8 +79,7 @@ class SemanticKitti(Dataset):
         root,  # directory where data is
         sequences,  # sequences for this data (e.g. [1,3,4,6])
         labels,  # label dict: (e.g 10: "car")
-        # use the data augmentation for residual maps (True or False)
-        residual_aug,
+        residual_aug,  # use the data augmentation for residual maps (True or False)
         color_map,  # colors dict bgr (e.g 10: [255, 0, 0])
         learning_map,  # classes to learn (0 to N-1 for xentropy)
         movable_learning_map,
@@ -153,23 +151,31 @@ class SemanticKitti(Dataset):
             raise ValueError("Sequences folder doesn't exist! Exiting...")
 
         assert isinstance(self.labels, dict)  # make sure labels is a dict
-        # make sure color_map is a dict
-        assert isinstance(self.color_map, dict)
-        # make sure learning_map is a dict
-        assert isinstance(self.learning_map, dict)
-        # make sure sequences is a list
-        assert isinstance(self.sequences, list)
+        assert isinstance(self.color_map, dict)  # make sure color_map is a dict
+        assert isinstance(self.learning_map, dict)  # make sure learning_map is a dict
+        assert isinstance(self.sequences, list)  # make sure sequences is a list
 
-        self.all_residaul_id = [1 * i for i in range(self.n_input_scans)]
+        if self.residual_aug:
+            self.all_residaul_id = list(
+                set(
+                    [
+                        delta_t * i
+                        for i in range(self.n_input_scans)
+                        for delta_t in range(1, 4)
+                    ]
+                )
+            )
+        else:
+            self.all_residaul_id = [1 * i for i in range(self.n_input_scans)]
 
         # placeholder for filenames
         self.scan_files = {}
         self.label_files = {}
         self.poses = {}
-
-        for i in self.all_residaul_id:
-            exec("self.residual_files_" + str(str(i + 1)) + " = {}")
-            exec("self.bev_residual_files_" + str(str(i + 1)) + " = {}")
+        if self.use_residual:
+            # for i in range(self.n_input_scans):
+            for i in self.all_residaul_id:
+                exec("self.residual_files_" + str(str(i + 1)) + " = {}")
 
         # fill in with names, checking that all sequences are complete
         for seq in self.sequences:
@@ -181,19 +187,15 @@ class SemanticKitti(Dataset):
             scan_path = os.path.join(self.root, seq, "velodyne")
             label_path = os.path.join(self.root, seq, "labels")
 
-            for i in self.all_residaul_id:
-                folder_name = "residual_images_" + str(i + 1)
-                bev_folder_name = "bev_residual_images_" + str(i + 1)
-                exec(
-                    "residual_path_"
-                    + str(i + 1)
-                    + " = os.path.join(self.root, seq, folder_name)"
-                )
-                exec(
-                    "bev_residual_path_"
-                    + str(i + 1)
-                    + " = os.path.join(self.root, seq, bev_folder_name)"
-                )
+            if self.use_residual:
+                # for i in range(self.n_input_scans):
+                for i in self.all_residaul_id:
+                    folder_name = "residual_images_" + str(i + 1)
+                    exec(
+                        "residual_path_"
+                        + str(i + 1)
+                        + " = os.path.join(self.root, seq, folder_name)"
+                    )
 
             # get files
             scan_files = [
@@ -209,26 +211,19 @@ class SemanticKitti(Dataset):
                 if is_label(f)
             ]
 
-            for i in self.all_residaul_id:
-                exec(
-                    "residual_files_"
-                    + str(i + 1)
-                    + " = "
-                    + "[os.path.join(dp, f) for dp, dn, fn in "
-                    "os.walk(os.path.expanduser(residual_path_" + str(i + 1) + "))"
-                    " for f in fn if is_residual(f)]"
-                )
+            if self.use_residual:
+                # for i in range(self.n_input_scans):
+                for i in self.all_residaul_id:
+                    exec(
+                        "residual_files_"
+                        + str(i + 1)
+                        + " = "
+                        + "[os.path.join(dp, f) for dp, dn, fn in "
+                        "os.walk(os.path.expanduser(residual_path_" + str(i + 1) + "))"
+                        " for f in fn if is_residual(f)]"
+                    )
 
-                exec(
-                    "bev_residual_files_"
-                    + str(i + 1)
-                    + " = "
-                    + "[os.path.join(dp, f) for dp, dn, fn in "
-                    "os.walk(os.path.expanduser(bev_residual_path_" + str(i + 1) + "))"
-                    " for f in fn if is_residual(f)]"
-                )
-
-            # Get poses and transform them to LiDAR coord frame for transforming point clouds
+            ### Get poses and transform them to LiDAR coord frame for transforming point clouds
             # load poses
             pose_file = os.path.join(self.root, seq, "poses.txt")
             poses = np.array(load_poses(pose_file))
@@ -247,7 +242,8 @@ class SemanticKitti(Dataset):
             self.poses[seq] = np.array(new_poses)
 
             # check all scans have labels
-            assert len(scan_files) == len(label_files)
+            if self.gt:
+                assert len(scan_files) == len(label_files)
 
             """
             Added for dynamic object segmentation
@@ -282,16 +278,6 @@ class SemanticKitti(Dataset):
                         + "residual_files_"
                         + str(i + 1)
                     )
-
-                    exec("bev_residual_files_" + str(i + 1) + ".sort()")
-                    exec(
-                        "self.bev_residual_files_"
-                        + str(i + 1)
-                        + "[seq]"
-                        + " = "
-                        + "bev_residual_files_"
-                        + str(i + 1)
-                    )
         # print("\033[32m No model directory found.\033[0m")
 
         print(f"\033[32m There are {self.dataset_size} frames in total. \033[0m")
@@ -306,40 +292,62 @@ class SemanticKitti(Dataset):
         )
 
     def __getitem__(self, dataset_index):
-        seq, start_index = self.index_mapping[dataset_index]
-        current_index = start_index
+
+        # Get sequence and start
+        seq, start_index = self.index_mapping[
+            dataset_index
+        ]  # seq: '05' start_index: 1856
+        # current_index = start_index + self.n_input_scans - 1  # this is used for multi-scan attach
+        current_index = start_index  # this is used for multi residual images
         current_pose = self.poses[seq][current_index]
         proj_full = torch.Tensor()
-        bev_full = torch.Tensor()
+        # index is now looping from first scan in input sequence to current scan
+        # for index in range(start_index, start_index + self.n_input_scans):
         for index in range(start_index, start_index + 1):
-            scan_file = self.scan_files[seq][current_index]
-            label_file = self.label_files[seq][current_index]
+            # get item in tensor shape
+            scan_file = self.scan_files[seq][index]
+            if self.gt:
+                label_file = self.label_files[seq][index]
 
-            # --------------------------------------------------------------------------
-            # 1) residual_input_scans_id 결정 (원본 코드와 동일 로직)
-            # --------------------------------------------------------------------------
-            residual_input_scans_id = [1 * i for i in range(self.n_input_scans)]
+            if self.residual_aug:
+                if self.transform:
+                    residual_enhance_prob = random.random()
+                    if residual_enhance_prob <= 0.5:
+                        residual_input_scans_id = [
+                            1 * i for i in range(self.n_input_scans)
+                        ]
+                    elif residual_enhance_prob <= 0.75:
+                        residual_input_scans_id = [
+                            2 * i for i in range(self.n_input_scans)
+                        ]
+                    else:
+                        residual_input_scans_id = [
+                            3 * i for i in range(self.n_input_scans)
+                        ]
+                else:
+                    residual_input_scans_id = [
+                        self.valid_residual_delta_t * i
+                        for i in range(self.n_input_scans)
+                    ]
+            else:
+                residual_input_scans_id = [1 * i for i in range(self.n_input_scans)]
 
-            for i in residual_input_scans_id:
-                exec(
-                    "residual_file_"
-                    + str(i + 1)
-                    + " = "
-                    + "self.residual_files_"
-                    + str(i + 1)
-                    + "[seq][index]"
-                )
-                exec(
-                    "bev_residual_file_"
-                    + str(i + 1)
-                    + " = "
-                    + "self.bev_residual_files_"
-                    + str(i + 1)
-                    + "[seq][index]"
-                )
+            if self.use_residual:
+                # for i in range(self.n_input_scans):
+                for i in residual_input_scans_id:
+                    # exec("print(index, len(self.residual_files_" + str(i+1) + "[seq]), i+1, seq) if index >= len(self.residual_files_" + str(i+1) + "[seq]) else print()")
+                    exec(
+                        "residual_file_"
+                        + str(i + 1)
+                        + " = "
+                        + "self.residual_files_"
+                        + str(i + 1)
+                        + "[seq][index]"
+                    )
 
             index_pose = self.poses[seq][index]
 
+            # open a semantic laserscan
             DA = False
             flip_sign = False
             rot = False
@@ -354,99 +362,119 @@ class SemanticKitti(Dataset):
                         rot = True
                     drop_points = random.uniform(0, 0.5)
 
-            scan = SemLaserScan(
-                self.color_map,
-                project=True,
-                H=self.sensor_img_H,
-                W=self.sensor_img_W,
-                fov_up=self.sensor_fov_up,
-                fov_down=self.sensor_fov_down,
-                DA=DA,
-                flip_sign=flip_sign,
-                drop_points=drop_points,
-                use_normal=self.use_normal,
-            )
+            if self.gt:
+                scan = SemLaserScan(
+                    self.color_map,
+                    project=True,
+                    H=self.sensor_img_H,
+                    W=self.sensor_img_W,
+                    fov_up=self.sensor_fov_up,
+                    fov_down=self.sensor_fov_down,
+                    DA=DA,
+                    flip_sign=flip_sign,
+                    drop_points=drop_points,
+                    use_normal=self.use_normal,
+                )
+            else:
+                scan = LaserScan(
+                    project=True,
+                    H=self.sensor_img_H,
+                    W=self.sensor_img_W,
+                    fov_up=self.sensor_fov_up,
+                    fov_down=self.sensor_fov_down,
+                    DA=DA,
+                    rot=rot,
+                    flip_sign=flip_sign,
+                    drop_points=drop_points,
+                    use_normal=self.use_normal,
+                )
 
+            # open and obtain (transformed) scan
             scan.open_scan(
                 scan_file, index_pose, current_pose, if_transform=self.transform_mod
             )
 
-            scan.open_label(label_file)
-            scan.sem_label = self.map(scan.sem_label, self.learning_map)
-            scan.proj_sem_movable_label = scan.proj_sem_label.copy()
-            scan.proj_sem_label = self.map(scan.proj_sem_label, self.learning_map)
-            scan.proj_sem_movable_label = self.map(
-                scan.proj_sem_movable_label, self.movable_learning_map
-            )
+            if self.gt:
+                scan.open_label(label_file)
+                # map unused classes to used classes (also for projection)
+                scan.sem_label = self.map(scan.sem_label, self.learning_map)
+                scan.proj_sem_movable_label = scan.proj_sem_label.copy()
 
+                scan.proj_sem_label = self.map(scan.proj_sem_label, self.learning_map)
+                scan.proj_sem_movable_label = self.map(
+                    scan.proj_sem_movable_label, self.movable_learning_map
+                )
+
+            # make a tensor of the uncompressed data (with the max num points)
             unproj_n_points = scan.points.shape[0]
+            unproj_xyz = torch.full((self.max_points, 3), -1.0, dtype=torch.float)
+            unproj_xyz[:unproj_n_points] = torch.from_numpy(scan.points)
+            unproj_range = torch.full([self.max_points], -1.0, dtype=torch.float)
+            unproj_range[:unproj_n_points] = torch.from_numpy(scan.unproj_range)
+            unproj_remissions = torch.full([self.max_points], -1.0, dtype=torch.float)
+            unproj_remissions[:unproj_n_points] = torch.from_numpy(scan.remissions)
+            if self.gt:
+                unproj_labels = torch.full([self.max_points], -1.0, dtype=torch.int32)
+                unproj_labels[:unproj_n_points] = torch.from_numpy(scan.sem_label)
+            else:
+                unproj_labels = []
+
+            # get points and labels
             proj_range = torch.from_numpy(scan.proj_range).clone()
             proj_xyz = torch.from_numpy(scan.proj_xyz).clone()
             proj_remission = torch.from_numpy(scan.proj_remission).clone()
             proj_mask = torch.from_numpy(scan.proj_mask)
-            proj_labels = torch.from_numpy(scan.proj_sem_label).clone()
-            proj_labels = proj_labels * proj_mask
-            proj_movable_labels = torch.from_numpy(scan.proj_sem_movable_label).clone()
-            proj_movable_labels = proj_movable_labels * proj_mask
+            if self.gt:
+                proj_labels = torch.from_numpy(scan.proj_sem_label).clone()
+                proj_labels = proj_labels * proj_mask
+
+                proj_movable_labels = torch.from_numpy(
+                    scan.proj_sem_movable_label
+                ).clone()
+                proj_movable_labels = proj_movable_labels * proj_mask
+            else:
+                proj_labels = []
+                proj_movable_labels = []
             proj_x = torch.full([self.max_points], -1, dtype=torch.long)
             proj_x[:unproj_n_points] = torch.from_numpy(scan.proj_x)
             proj_y = torch.full([self.max_points], -1, dtype=torch.long)
             proj_y[:unproj_n_points] = torch.from_numpy(scan.proj_y)
-            unproj_range = torch.full([self.max_points], -1.0, dtype=torch.float)
-            unproj_range[:unproj_n_points] = torch.from_numpy(scan.unproj_range)
 
-            #### BEV 처리 ####
-            bev_bunch_path = os.path.join(
-                "/home/work_docker/KITTI/test_output_h5",
-                "%02d" % int(seq),
-                "%06d.h5" % int(current_index),
-            )
-            bev_h5 = h5py.File(bev_bunch_path, "r")
-            bev_bunch = np.array(bev_h5["bev_composite"])
-            bev_proj_x = np.array(bev_h5["bev_proj_x"])
-            bev_proj_y = np.array(bev_h5["bev_proj_y"])
-            bev_range = bev_bunch[0]
-            bev_unproj_range = np.array(bev_h5["bev_unproj_range"])
-
-            bev = torch.from_numpy(bev_bunch[:5]).clone()
-            bev_labels = torch.from_numpy(bev_bunch[5]).clone()
-            bev_movable_labels = torch.from_numpy(bev_bunch[6]).clone()
-
-            for i in residual_input_scans_id:
-                exec(
-                    "proj_residuals_"
-                    + str(i + 1)
-                    + " = torch.Tensor(np.load(residual_file_"
-                    + str(i + 1)
-                    + "))"
-                )
-                exec(
-                    "bev_residuals_"
-                    + str(i + 1)
-                    + " = torch.Tensor(np.load(bev_residual_file_"
-                    + str(i + 1)
-                    + "))"
-                )
+            if self.use_residual:
+                # for i in range(self.n_input_scans):
+                for i in residual_input_scans_id:
+                    exec(
+                        "proj_residuals_"
+                        + str(i + 1)
+                        + " = torch.Tensor(np.load(residual_file_"
+                        + str(i + 1)
+                        + "))"
+                    )
+                    # if flip_sign:
+                    #   exec("proj_residuals_" + str(i+1) + " = torch.flip(proj_residuals_" + str(i+1) + ", [-1])")
 
             proj = torch.cat(
                 [
-                    proj_range.unsqueeze(0).clone(),
-                    proj_xyz.clone().permute(2, 0, 1),
+                    proj_range.unsqueeze(0).clone(),  # torch.Size([1, 64, 2048])
+                    proj_xyz.clone().permute(2, 0, 1),  # torch.Size([3, 64, 2048])
                     proj_remission.unsqueeze(0).clone(),
                 ]
-            )
-
+            )  # torch.Size([1, 64, 2048])
             proj = (proj - self.sensor_img_means[:, None, None]) / self.sensor_img_stds[
                 :, None, None
             ]
 
-            bev = (bev - self.sensor_img_means[:, None, None]) / self.sensor_img_stds[
-                :, None, None
-            ]
-
             proj_full = torch.cat([proj_full, proj])
-            bev_full = torch.cat([bev_full, bev])
 
+        if self.use_normal:
+            proj_full = torch.cat(
+                [proj_full, torch.from_numpy(scan.normal_map).clone().permute(2, 0, 1)]
+            )  # 5 + 3 = 8 channel
+            # proj_full = torch.cat([proj_full, proj_xyz.clone().permute(2, 0, 1)]) # 5 + 3 = 8 channel
+
+        # add residual channel
+        if self.use_residual:
+            # for i in range(self.n_input_scans):
             for i in residual_input_scans_id:
                 proj_full = torch.cat(
                     [
@@ -454,29 +482,68 @@ class SemanticKitti(Dataset):
                         torch.unsqueeze(eval("proj_residuals_" + str(i + 1)), 0),
                     ]
                 )
-                bev_full = torch.cat(
-                    [
-                        bev_full,
-                        torch.unsqueeze(eval("bev_residuals_" + str(i + 1)), 0),
-                    ]
-                ).float()
 
         proj_full = proj_full * proj_mask.float()
 
-        path_seq, path_name = seq, "%06d.npy" % int(current_index)
+        # get name and sequence
+        path_norm = os.path.normpath(scan_file)
+        path_split = path_norm.split(os.sep)
+        path_seq = path_split[-3]
+        path_name = path_split[-1].replace(".bin", ".label")
 
-        # --------------------------------------------------------------------------
-        # return
-        # --------------------------------------------------------------------------
+        print(
+            "[proj_full.shape]",
+            proj_full.shape,
+            "[(proj_labels.shape, proj_movable_labels.shape)]",
+            (proj_labels.shape, proj_movable_labels.shape),
+            "[(path_seq, path_name)]",
+            (path_seq, path_name),
+            "[(proj_x.shape, proj_y.shape)]",
+            (proj_x.shape, proj_y.shape),
+            "[(proj_range.shape, unproj_range.shape)]",
+            (proj_range.shape, unproj_range.shape),
+            "[unproj_n_points]",
+            unproj_n_points,
+            "[proj_x]",
+            proj_x,
+            "\n",
+            sep="\n",
+            end="=========================================\n",
+        )
+
+        # [infer.py]                  [trainer.py]
+        # proj_in,                    in_vol,
+        # _,                          _,
+        # _,                          all_proj_labels,
+        # _,                          _,
+        # path_seq,                   _,
+        # path_name,                  _,
+        # p_x,                        _,
+        # p_y,                        _,
+        # proj_range,                 _,
+        # unproj_range,               _,
+        # _,                          _,
+        # _,                          _,
+        # _,                          _,
+        # _,                          _,
+        # npoints,                    _,
+
         return (
-            (proj_full, bev_full),  # range (13, H, W) | bev (13, H_bev, W_bev)
-            (proj_labels, proj_movable_labels),  # range (H, W), (H, W)
-            (bev_labels, bev_movable_labels),  # bev (H_bev, W_bev), (H_bev, W_bev)
-            (path_seq, path_name, unproj_n_points),  # ex. '08', '000123.npy', 122319
-            (proj_x, proj_y),  # (150000, ), (150000, )
-            (bev_proj_x, bev_proj_y),  # (150000, ), (150000, )
-            (proj_range, bev_range),  # (64, 2048), (360, 360)
-            (unproj_range, bev_unproj_range),  # (150000, ), (150000, )
+            proj_full,
+            proj_mask,
+            (proj_labels, proj_movable_labels),
+            unproj_labels,
+            path_seq,
+            path_name,
+            proj_x,
+            proj_y,
+            proj_range,
+            unproj_range,
+            proj_xyz,
+            unproj_xyz,
+            proj_remission,
+            unproj_remissions,
+            unproj_n_points,
         )
 
     def __len__(self):
@@ -510,9 +577,11 @@ class SemanticKitti(Dataset):
 
     def remove_few_static_frames(self):
         # Developed by Jiadai Sun 2021-11-07
-        # 너무 많은 정적 프레임이 훈련 시간을 증가시키므로 일부 프레임을 제거하기 위한 함수입니다.
-        # 수정 대상: self.scan_files, self.label_files, self.residual_files_1~8, self.bev_residual_files_1~8,
-        #             self.poses, self.index_mapping, self.dataset_size
+        # This function is used to clear some frames, because too many static frames will lead to a long training time
+        # There are several main dicts that need to be modified and processed
+        #   self.scan_files, self.label_files, self.residual_files_1 ....8
+        #   self.poses, self.index_mapping
+        #   self.dataset_size (int number)
 
         remove_mapping_path = os.path.join(
             os.path.dirname(__file__),
@@ -537,7 +606,7 @@ class SemanticKitti(Dataset):
                         pending_dict[seq] = [fid]
 
         self.total_remove = 0
-        self.index_mapping = {}  # 재초기화
+        self.index_mapping = {}  # Reinitialize
         dataset_index = 0
         self.dataset_size = 0
         for seq in self.sequences:
@@ -545,7 +614,7 @@ class SemanticKitti(Dataset):
             if seq in pending_dict.keys():
                 raw_len = len(self.scan_files[seq])
 
-                # lidar scan 파일 필터링
+                # lidar scan files
                 scan_files = self.scan_files[seq]
                 useful_scan_paths = [
                     path
@@ -554,7 +623,7 @@ class SemanticKitti(Dataset):
                 ]
                 self.scan_files[seq] = useful_scan_paths
 
-                # label 파일 필터링
+                # label_files
                 label_files = self.label_files[seq]
                 useful_label_paths = [
                     path
@@ -563,23 +632,25 @@ class SemanticKitti(Dataset):
                 ]
                 self.label_files[seq] = useful_label_paths
 
-                # poses 필터링
+                # poses_file
                 self.poses[seq] = self.poses[seq][list(map(int, pending_dict[seq]))]
 
                 assert len(useful_scan_paths) == len(useful_label_paths)
                 assert len(useful_scan_paths) == self.poses[seq].shape[0]
 
-                # dataloader __getitem__에서 사용할 index_mapping과 dataset_size 재설정
-                n_used_files = max(0, len(useful_scan_paths))
+                # the index_mapping and dataset_size is used in dataloader __getitem__
+                n_used_files = max(
+                    0, len(useful_scan_paths)
+                )  # this is used for multi residual images
                 for start_index in range(n_used_files):
                     self.index_mapping[dataset_index] = (seq, start_index)
                     dataset_index += 1
                 self.dataset_size += n_used_files
 
-                # range residuals와 함께 bev residuals도 필터링
+                # More elegant implementation
                 if self.use_residual:
+                    # for i in range(self.n_input_scans):
                     for i in self.all_residaul_id:
-                        # range residual 파일 필터링
                         tmp_residuals = eval(f"self.residual_files_{i+1}['{seq}']")
                         tmp_pending_list = eval(f"pending_dict['{seq}']")
                         tmp_usefuls = [
@@ -592,25 +663,9 @@ class SemanticKitti(Dataset):
                         print(
                             f"  Drop residual_images_{i+1} in seq{seq}: {len(tmp_residuals)} -> {new_len}"
                         )
+                        # if i >= 2:
+                        #     exec(f"assert len(self.residual_files_{i-1}[\'{seq}\']) == len(self.residual_files_{i}[\'{seq}\'])")
 
-                        # bev residual 파일 필터링 추가
-                        tmp_bev_residuals = eval(
-                            f"self.bev_residual_files_{i+1}['{seq}']"
-                        )
-                        tmp_usefuls_bev = [
-                            path
-                            for path in tmp_bev_residuals
-                            if os.path.split(path)[-1][:-4] in tmp_pending_list
-                        ]
-                        exec(
-                            f"self.bev_residual_files_{i+1}['{seq}'] = tmp_usefuls_bev"
-                        )
-                        new_len_bev = len(
-                            eval(f"self.bev_residual_files_{i+1}['{seq}']")
-                        )
-                        print(
-                            f"  Drop bev_residual_images_{i+1} in seq{seq}: {len(tmp_bev_residuals)} -> {new_len_bev}"
-                        )
                 new_len = len(self.scan_files[seq])
                 print(f"Seq {seq} drop {raw_len - new_len}: {raw_len} -> {new_len}")
                 self.total_remove += raw_len - new_len

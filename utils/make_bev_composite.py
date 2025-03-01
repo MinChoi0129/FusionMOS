@@ -1,9 +1,12 @@
 import os
 import numpy as np
+import h5py
 from tqdm import tqdm
 import multiprocessing as mp
 from concurrent.futures import ThreadPoolExecutor
+import torch
 
+# 매핑 딕셔너리 (moving, movable)
 moving_learning_map = {
     0: 0,
     1: 0,
@@ -111,12 +114,16 @@ def bev_projection_full(
     homo_points, remissions, proj_H=360, proj_W=360, max_range=50.0, min_range=2.0
 ):
     """
-    homo_points: n×4 (x, y, z, 1)
-    remissions: n, float
+    입력:
+      homo_points: n×4 (x, y, z, 1)
+      remissions: n, float
     출력:
       bev_range: (proj_H, proj_W) 각 픽셀의 XY 평면 거리 (없으면 -1)
       bev_xyz:   (proj_H, proj_W, 3) 각 픽셀에 매핑된 (x, y, z) 좌표 (없으면 -1)
       bev_remission: (proj_H, proj_W) 각 픽셀의 remission 값 (없으면 -1)
+      bev_proj_x:  유효 포인트들의 x 픽셀 좌표 (1D 배열)
+      bev_proj_y:  유효 포인트들의 y 픽셀 좌표 (1D 배열)
+      bev_unproj_range: 유효 포인트들의 원본 XY 거리 값 (1D 배열)
     """
     xy_dist = np.sqrt(homo_points[:, 0] ** 2 + homo_points[:, 1] ** 2)
     valid_mask = (xy_dist > min_range) & (xy_dist < max_range)
@@ -128,15 +135,22 @@ def bev_projection_full(
         bev_range = np.full((proj_H, proj_W), -1, dtype=np.float32)
         bev_xyz = np.full((proj_H, proj_W, 3), -1, dtype=np.float32)
         bev_remission = np.full((proj_H, proj_W), -1, dtype=np.float32)
-        return bev_range, bev_xyz, bev_remission
+        return (
+            bev_range,
+            bev_xyz,
+            bev_remission,
+            np.array([]),
+            np.array([]),
+            np.array([]),
+        )
 
-    # 정규화: x,y를 [-max_range, max_range] -> [0,1]
+    # x, y 좌표를 [0,1]로 정규화 후 이미지 크기에 맞게 변환
     x_img = (filtered_points[:, 0] + max_range) / (2.0 * max_range)
     y_img = (filtered_points[:, 1] + max_range) / (2.0 * max_range)
     x_img = np.clip(np.floor(x_img * proj_W), 0, proj_W - 1).astype(np.int32)
     y_img = np.clip(np.floor(y_img * proj_H), 0, proj_H - 1).astype(np.int32)
 
-    # 거리가 큰 순으로 정렬 (먼 점부터 채워서 가까운 점이 덮어쓰도록)
+    # 먼 점부터 투영 (덮어쓰기를 위해)
     order = np.argsort(filtered_dist)[::-1]
     x_img = x_img[order]
     y_img = y_img[order]
@@ -151,7 +165,8 @@ def bev_projection_full(
     bev_range[y_img, x_img] = filtered_dist
     bev_xyz[y_img, x_img, :] = filtered_points[:, :3]
     bev_remission[y_img, x_img] = filtered_rem
-    return bev_range, bev_xyz, bev_remission
+
+    return bev_range, bev_xyz, bev_remission, x_img, y_img, filtered_dist
 
 
 def bev_label_projection_full(
@@ -208,7 +223,8 @@ class BevScan:
     """
     BEV Scan 클래스:
       - velodyne 스캔과 라벨 파일을 받아 BEV 투영을 수행하여,
-        bev_range (거리), bev_xyz (3채널), bev_remission, bev_sem_label을 생성.
+        bev_range, bev_xyz, bev_remission, bev_sem_label과 함께
+        bev_proj_x, bev_proj_y, bev_unproj_range도 생성.
     """
 
     def __init__(self, proj_H=360, proj_W=360, max_range=50.0, min_range=2.0):
@@ -220,7 +236,14 @@ class BevScan:
     def process(self, scan_path, label_path):
         homo_points, remissions = load_scan_with_remission(scan_path)
         sem_label, _ = load_label(label_path)
-        self.bev_range, self.bev_xyz, self.bev_remission = bev_projection_full(
+        (
+            self.bev_range,
+            self.bev_xyz,
+            self.bev_remission,
+            self.bev_proj_x,
+            self.bev_proj_y,
+            self.bev_unproj_range,
+        ) = bev_projection_full(
             homo_points,
             remissions,
             proj_H=self.proj_H,
@@ -236,27 +259,41 @@ class BevScan:
             max_range=self.max_range,
             min_range=self.min_range,
         )
-        return self.bev_range, self.bev_xyz, self.bev_remission, self.bev_sem_label
+        return (
+            self.bev_range,
+            self.bev_xyz,
+            self.bev_remission,
+            self.bev_proj_x,
+            self.bev_proj_y,
+            self.bev_unproj_range,
+            self.bev_sem_label,
+        )
 
 
-def process_one_frame(velodyne_path, label_path, output_path):
+def process_one_frame_h5(velodyne_path, label_path, output_path):
     proj_H, proj_W = 360, 360
     max_range = 50.0
     min_range = 2.0
 
-    # BEV Scan 클래스 생성 및 처리 (현재 프레임)
     bev_scan = BevScan(proj_H, proj_W, max_range, min_range)
-    bev_range_img, bev_xyz, bev_remission, bev_sem_label = bev_scan.process(
-        velodyne_path, label_path
-    )
+    (
+        bev_range_img,
+        bev_xyz,
+        bev_remission,
+        bev_proj_x,
+        bev_proj_y,
+        bev_unproj_range,
+        bev_sem_label,
+    ) = bev_scan.process(velodyne_path, label_path)
 
-    # 1. Composite BEV 이미지: R: bev_range, G: 평균 bev_xyz, B: bev_remission (정규화)
+    # 정규화: 범위와 remission 채널
     norm_range = np.clip(bev_range_img, 0, max_range) / max_range
-    norm_rem = np.clip(bev_remission, 0, np.max(bev_remission[bev_remission > 0]))
-    if np.any(norm_rem > 0):
-        norm_rem = norm_rem / np.max(norm_rem)
+    if np.any(bev_remission > 0):
+        norm_rem = np.clip(
+            bev_remission, 0, np.max(bev_remission[bev_remission > 0])
+        ) / np.max(bev_remission[bev_remission > 0])
     else:
-        norm_rem = norm_rem
+        norm_rem = bev_remission
 
     bev_moving_ternary = create_ternary_label(bev_sem_label, moving_learning_map)
     bev_movable_ternary = create_ternary_label(bev_sem_label, movable_learning_map)
@@ -272,33 +309,46 @@ def process_one_frame(velodyne_path, label_path, output_path):
         axis=0,
     )
 
-    # print(bev_composite.shape)
+    unproj_n_points = bev_proj_x.shape[0]
+    tmp_x = torch.full([150000], -1, dtype=torch.long)
+    tmp_x[:unproj_n_points] = torch.from_numpy(bev_proj_x)
+    tmp_y = torch.full([150000], -1, dtype=torch.long)
+    tmp_y[:unproj_n_points] = torch.from_numpy(bev_proj_y)
+    tmp_unproj_range = torch.full([150000], -1.0, dtype=torch.float)
+    tmp_unproj_range[:unproj_n_points] = torch.from_numpy(bev_unproj_range)
 
-    np.save(output_path, bev_composite)
+    # h5 파일로 저장
+    with h5py.File(output_path, "w") as f:
+        f.create_dataset("bev_composite", data=bev_composite)
+        f.create_dataset("bev_proj_x", data=tmp_x.cpu().numpy())
+        f.create_dataset("bev_proj_y", data=tmp_y.cpu().numpy())
+        # f.create_dataset("bev_proj_range", data=bev_range_img)
+        f.create_dataset("bev_unproj_range", data=tmp_unproj_range.cpu().numpy())
+    print(f"Saved: {output_path}")
 
 
+# 시퀀스 단위 처리 (h5 저장 버전)
 dataset_sequences_path = "/home/work_docker/KITTI/dataset/sequences"
-output_root = "/home/work_docker/KITTI/test_output"
-num_workers = mp.cpu_count()  # 사용 가능한 CPU 코어 개수
+output_root = "/home/work_docker/KITTI/test_output_h5"
+num_workers = mp.cpu_count()
 
 
-def process_frame(seq_id, frame_id_with_bin):
+def process_frame(seq_id, frame_file):
     velodyne_folder = os.path.join(dataset_sequences_path, "%02d" % seq_id, "velodyne")
     labels_folder = os.path.join(dataset_sequences_path, "%02d" % seq_id, "labels")
     output_folder = os.path.join(output_root, "%02d" % seq_id)
     os.makedirs(output_folder, exist_ok=True)
 
-    frame_id = int(frame_id_with_bin[:6])
+    frame_id = int(frame_file[:6])
     velodyne_path = os.path.join(velodyne_folder, "%06d.bin" % frame_id)
     label_path = os.path.join(labels_folder, "%06d.label" % frame_id)
-    output_path = os.path.join(output_folder, "%06d.npy" % frame_id)
-    process_one_frame(velodyne_path, label_path, output_path)
+    output_path = os.path.join(output_folder, "%06d.h5" % frame_id)
+    process_one_frame_h5(velodyne_path, label_path, output_path)
 
 
 def process_one_sequence(seq_id):
     velodyne_folder = os.path.join(dataset_sequences_path, "%02d" % seq_id, "velodyne")
     frame_files = os.listdir(velodyne_folder)
-
     with ThreadPoolExecutor(max_workers=num_workers) as executor:
         list(
             tqdm(
@@ -307,8 +357,7 @@ def process_one_sequence(seq_id):
                 desc=f"Processing Seq {seq_id}",
             )
         )
-
-    print(seq_id, "완료")
+    print(f"Sequence {seq_id} 완료")
 
 
 if __name__ == "__main__":
