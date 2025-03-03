@@ -111,7 +111,7 @@ def load_label(label_path):
 
 
 def bev_projection_full(
-    homo_points, remissions, proj_H=360, proj_W=360, max_range=50.0, min_range=2.0
+    homo_points, remissions, proj_H, proj_W, max_range=50.0, min_range=2.0
 ):
     """
     입력:
@@ -170,7 +170,7 @@ def bev_projection_full(
 
 
 def bev_label_projection_full(
-    homo_points, sem_label, proj_H=360, proj_W=360, max_range=50.0, min_range=2.0
+    homo_points, sem_label, proj_H, proj_W, max_range=50.0, min_range=2.0
 ):
     """
     homo_points: n×4 (x, y, z, 1)
@@ -227,7 +227,7 @@ class BevScan:
         bev_proj_x, bev_proj_y, bev_unproj_range도 생성.
     """
 
-    def __init__(self, proj_H=360, proj_W=360, max_range=50.0, min_range=2.0):
+    def __init__(self, proj_H, proj_W, max_range=50.0, min_range=2.0):
         self.proj_H = proj_H
         self.proj_W = proj_W
         self.max_range = max_range
@@ -271,7 +271,7 @@ class BevScan:
 
 
 def process_one_frame_h5(velodyne_path, label_path, output_path):
-    proj_H, proj_W = 360, 360
+    proj_H, proj_W = 768, 768
     max_range = 50.0
     min_range = 2.0
 
@@ -328,8 +328,8 @@ def process_one_frame_h5(velodyne_path, label_path, output_path):
 
 
 # 시퀀스 단위 처리 (h5 저장 버전)
-dataset_sequences_path = "/home/work_docker/KITTI/dataset/sequences"
-output_root = "/home/work_docker/KITTI/test_output_h5"
+dataset_sequences_path = "/home/ssd_4tb/minjae/KITTI/dataset/sequences"
+output_root = "/home/ssd_4tb/minjae/KITTI/test_output_h5"
 num_workers = mp.cpu_count()
 
 
@@ -361,5 +361,5 @@ def process_one_sequence(seq_id):
 
 
 if __name__ == "__main__":
-    with mp.Pool(processes=num_workers - 6) as pool:
+    with mp.Pool(processes=num_workers // 4) as pool:
         pool.map(process_one_sequence, range(11))

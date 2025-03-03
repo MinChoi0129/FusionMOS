@@ -396,21 +396,28 @@ class SemanticKitti(Dataset):
             unproj_range[:unproj_n_points] = torch.from_numpy(scan.unproj_range)
 
             #### BEV 처리 ####
+            # 파일 경로 생성 (f-string 사용)
             bev_bunch_path = os.path.join(
-                "/home/work_docker/KITTI/test_output_h5",
-                "%02d" % int(seq),
-                "%06d.h5" % int(current_index),
+                "/home/ssd_4tb/minjae/KITTI/test_output_h5",
+                f"{int(seq):02d}",
+                f"{int(current_index):06d}.h5",
             )
-            bev_h5 = h5py.File(bev_bunch_path, "r")
-            bev_bunch = np.array(bev_h5["bev_composite"])
-            bev_proj_x = np.array(bev_h5["bev_proj_x"])
-            bev_proj_y = np.array(bev_h5["bev_proj_y"])
-            bev_range = bev_bunch[0]
-            bev_unproj_range = np.array(bev_h5["bev_unproj_range"])
 
-            bev = torch.from_numpy(bev_bunch[:5]).clone()
-            bev_labels = torch.from_numpy(bev_bunch[5]).clone()
-            bev_movable_labels = torch.from_numpy(bev_bunch[6]).clone()
+            # context manager를 사용해 h5 파일 열기
+            with h5py.File(bev_bunch_path, "r") as bev_h5:
+                # slicing을 통해 필요한 데이터를 한 번에 읽음
+                bev_bunch = bev_h5["bev_composite"][:]  # 전체 배열 읽기
+                bev_proj_x = bev_h5["bev_proj_x"][:]  # 필요한 데이터 읽기
+                bev_proj_y = bev_h5["bev_proj_y"][:]
+                bev_unproj_range = bev_h5["bev_unproj_range"][:]
+
+            # bev_range는 bev_bunch의 첫번째 요소를 사용 (이미 numpy array임)
+            bev_range = bev_bunch[0]
+
+            # torch tensor 변환 (불필요한 clone() 제거)
+            bev = torch.from_numpy(bev_bunch[:5])
+            bev_labels = torch.from_numpy(bev_bunch[5])
+            bev_movable_labels = torch.from_numpy(bev_bunch[6])
 
             for i in residual_input_scans_id:
                 exec(
@@ -475,7 +482,7 @@ class SemanticKitti(Dataset):
             (path_seq, path_name, unproj_n_points),  # ex. '08', '000123.npy', 122319
             (proj_x, proj_y),  # (150000, ), (150000, )
             (bev_proj_x, bev_proj_y),  # (150000, ), (150000, )
-            (proj_range, bev_range),  # (64, 2048), (360, 360)
+            (proj_range, bev_range),  # (64, 2048), (1024, 1024)
             (unproj_range, bev_unproj_range),  # (150000, ), (150000, )
         )
 

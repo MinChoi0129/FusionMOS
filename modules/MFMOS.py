@@ -3,12 +3,14 @@ import __init__ as booger
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
+import sys
+
+sys.path.append("/home/work/MF-MOS/")
+
 from utils.utils import *
 
-# BaseBlocks.py의 클래스들을 임포트.
-# ResContextBlock, ResBlock, UpBlock, MetaKernel 등이 들어있다고 가정.
-# 다만, BEV 전용으로 pixelshuffle factor나 pooling kernel_size 등을 (2,2)로 쓰기 위해
-# 아래처럼 별도 UpBlockBEV를 정의하거나, 기존 UpBlock에 파라미터를 추가할 수 있음.
 
 from modules.BaseBlocks import (
     MetaKernel,
@@ -17,166 +19,7 @@ from modules.BaseBlocks import (
     UpBlock,  # Range 쪽에서 (2,4) pixelshuffle
 )
 
-
-class UpBlockBEV(nn.Module):
-    def __init__(self, in_filters, out_filters, dropout_rate, drop_out=True):
-        super(UpBlockBEV, self).__init__()
-        self.drop_out = drop_out
-        self.in_filters = in_filters
-        self.out_filters = out_filters
-
-        self.dropout1 = nn.Dropout2d(p=dropout_rate)
-        self.dropout2 = nn.Dropout2d(p=dropout_rate)
-        self.dropout3 = nn.Dropout2d(p=dropout_rate)
-
-        # (중요) (2,2) pixelshuffle -> in_filters//4 만큼 채널이 감소
-        self.conv1 = nn.Conv2d(
-            in_filters // 4 + 2 * out_filters,  # 여기서 // 8 -> // 4 로 수정
-            out_filters,
-            (3, 3),
-            padding=1,
-        )
-        self.act1 = nn.LeakyReLU()
-        self.bn1 = nn.BatchNorm2d(out_filters)
-
-        self.conv2 = nn.Conv2d(out_filters, out_filters, (3, 3), dilation=2, padding=2)
-        self.act2 = nn.LeakyReLU()
-        self.bn2 = nn.BatchNorm2d(out_filters)
-
-        self.conv3 = nn.Conv2d(out_filters, out_filters, (2, 2), dilation=2, padding=1)
-        self.act3 = nn.LeakyReLU()
-        self.bn3 = nn.BatchNorm2d(out_filters)
-
-        self.conv4 = nn.Conv2d(out_filters * 3, out_filters, kernel_size=(1, 1))
-        self.act4 = nn.LeakyReLU()
-        self.bn4 = nn.BatchNorm2d(out_filters)
-
-    def pixelshuffle2x(self, x):
-        """(2,2) pixelshuffle로 2배 업샘플"""
-        B, iC, iH, iW = x.shape
-        pH, pW = 2, 2
-        oC = iC // (pH * pW)  # iC//4
-        oH, oW = iH * pH, iW * pW
-
-        y = x.reshape(B, oC, pH, pW, iH, iW)  # pixelshuffle
-        y = y.permute(0, 1, 4, 2, 5, 3)
-        y = y.reshape(B, oC, oH, oW)
-        return y
-
-    def forward(self, x, skip):
-        # x: [B, in_filters, H, W]
-        # skip: [B, out_filters*2, H, W] (ResBlockBEV 등에서 반환)
-        upA = self.pixelshuffle2x(x)  # -> [B, in_filters//4, 2H, 2W]
-        if self.drop_out:
-            upA = self.dropout1(upA)
-
-        upB = torch.cat((upA, skip), dim=1)  # 채널 합: in_filters//4 + skip_ch
-        if self.drop_out:
-            upB = self.dropout2(upB)
-
-        # conv1 입력 채널수가 in_filters//4 + skip_ch와 동일해야 함
-        upE = self.conv1(upB)
-        upE = self.act1(upE)
-        upE1 = self.bn1(upE)
-
-        upE = self.conv2(upE1)
-        upE = self.act2(upE)
-        upE2 = self.bn2(upE)
-
-        upE = self.conv3(upE2)
-        upE = self.act3(upE)
-        upE3 = self.bn3(upE)
-
-        concat = torch.cat((upE1, upE2, upE3), dim=1)
-        upE = self.conv4(concat)
-        upE = self.act4(upE)
-        upE = self.bn4(upE)
-        if self.drop_out:
-            upE = self.dropout3(upE)
-
-        return upE
-
-
-class ResBlockBEV(nn.Module):
-    """
-    BEV용 ResBlock
-    (2,2) Pooling으로 360->180->90->45
-    """
-
-    def __init__(
-        self,
-        in_filters,
-        out_filters,
-        dropout_rate,
-        kernel_size=(2, 2),
-        stride=1,
-        pooling=True,
-        drop_out=True,
-    ):
-        super(ResBlockBEV, self).__init__()
-        self.pooling = pooling
-        self.drop_out = drop_out
-
-        self.conv1 = nn.Conv2d(
-            in_filters, out_filters, kernel_size=(1, 1), stride=stride
-        )
-        self.act1 = nn.LeakyReLU()
-
-        self.conv2 = nn.Conv2d(in_filters, out_filters, kernel_size=(3, 3), padding=1)
-        self.act2 = nn.LeakyReLU()
-        self.bn1 = nn.BatchNorm2d(out_filters)
-
-        self.conv3 = nn.Conv2d(
-            out_filters, out_filters, kernel_size=(3, 3), dilation=2, padding=2
-        )
-        self.act3 = nn.LeakyReLU()
-        self.bn2 = nn.BatchNorm2d(out_filters)
-
-        self.conv4 = nn.Conv2d(
-            out_filters, out_filters, kernel_size=(2, 2), dilation=2, padding=1
-        )
-        self.act4 = nn.LeakyReLU()
-        self.bn3 = nn.BatchNorm2d(out_filters)
-
-        self.conv5 = nn.Conv2d(out_filters * 3, out_filters, kernel_size=(1, 1))
-        self.act5 = nn.LeakyReLU()
-        self.bn4 = nn.BatchNorm2d(out_filters)
-
-        if pooling:
-            self.dropout = nn.Dropout2d(p=dropout_rate)
-            self.pool = nn.AvgPool2d(kernel_size=kernel_size)  # (2,2)로 반토막
-        else:
-            self.dropout = nn.Dropout2d(p=dropout_rate)
-
-    def forward(self, x):
-        shortcut = self.conv1(x)
-        shortcut = self.act1(shortcut)
-
-        resA = self.conv2(x)
-        resA = self.act2(resA)
-        resA1 = self.bn1(resA)
-
-        resA = self.conv3(resA1)
-        resA = self.act3(resA)
-        resA2 = self.bn2(resA)
-
-        resA = self.conv4(resA2)
-        resA = self.act4(resA)
-        resA3 = self.bn3(resA)
-
-        concat = torch.cat((resA1, resA2, resA3), dim=1)
-        resA = self.conv5(concat)
-        resA = self.act5(resA)
-        resA = self.bn4(resA)
-        resA = shortcut + resA
-
-        if self.pooling:
-            resB = self.dropout(resA) if self.drop_out else resA
-            resB = self.pool(resB)
-            return resB, resA
-        else:
-            resB = self.dropout(resA) if self.drop_out else resA
-            return resB
+from modules.BaseBlocksBEV import ResBlockBEV, UpBlockBEV
 
 
 class MFMOS(nn.Module):
@@ -187,35 +30,37 @@ class MFMOS(nn.Module):
         params,
         num_batch=None,
         point_refine=None,
-        bev_in_ch=13,  # BEV 입력 채널 수
     ):
         super(MFMOS, self).__init__()
         self.nclasses = nclasses
         self.use_attention = "MGA"
         self.point_refine = point_refine
+        self.bs = num_batch if num_batch is not None else params["train"]["batch_size"]
+
+        # residual 개수
+        self.n_input_scans = params["train"]["n_input_scans"]
+
+        # 채널
+        self.range_channel = 5
+        self.bev_channel = 5
+
+        # 해상도
+        self.range_height = 64
+        self.range_width = 2048
+        self.bev_height = 768
+        self.bev_width = 768
 
         # ---------------------------
         # Range Branch 설정
         # ---------------------------
-        self.range_channel = 5
-        print("Channel of range image input = ", self.range_channel)
-        print("Number of residual images input = ", params["train"]["n_input_scans"])
-
         self.downCntx = ResContextBlock(self.range_channel, 32)
         self.downCntx2 = ResContextBlock(32, 32)
         self.downCntx3 = ResContextBlock(32, 32)
-        print("params['train']['batch_size']", params["train"]["batch_size"])
         self.metaConv = MetaKernel(
-            num_batch=(
-                int(params["train"]["batch_size"]) if num_batch is None else num_batch
-            ),
-            feat_height=params["dataset"]["sensor"]["img_prop"]["height"],
-            feat_width=params["dataset"]["sensor"]["img_prop"]["width"],
+            num_batch=self.bs,
+            feat_height=self.range_height,
+            feat_width=self.range_width,
             coord_channels=self.range_channel,
-        )
-        print(
-            'params["dataset"]["sensor"]["img_prop"]["height"] :',
-            params["dataset"]["sensor"]["img_prop"]["height"],
         )
 
         # Range Branch Encoder
@@ -234,8 +79,7 @@ class MFMOS(nn.Module):
         self.upBlock4 = UpBlock(64, 32, 0.2, drop_out=False)
 
         # Residual Image(Temporal) Branch
-        self.RI_downCntx = ResContextBlock(params["train"]["n_input_scans"], 32)
-
+        self.RI_downCntx = ResContextBlock(self.n_input_scans, 32)
         self.RI_resBlock1 = ResBlock(
             32, 64, 0.2, pooling=True, drop_out=False, kernel_size=(2, 4)
         )
@@ -249,14 +93,19 @@ class MFMOS(nn.Module):
         self.movable_logits = nn.Conv2d(32, movable_nclasses, kernel_size=(1, 1))
 
         # ---------------------------
-        # BEV Branch 설정 (새로 추가)
-        #  - BEV는 (2,2) 풀링으로 3번만 다운샘플(360->180->90->45)
-        #  - UpBlockBEV로 3번 업샘플
+        # BEV Branch 설정
         # ---------------------------
-        self.bev_downCntx = ResContextBlock(bev_in_ch, 32)
+        self.bev_downCntx = ResContextBlock(self.bev_channel, 32)
         self.bev_downCntx2 = ResContextBlock(32, 32)
         self.bev_downCntx3 = ResContextBlock(32, 32)
+        self.bev_metaConv = MetaKernel(
+            num_batch=self.bs,
+            feat_height=self.bev_height,
+            feat_width=self.bev_width,
+            coord_channels=self.bev_channel,
+        )
 
+        # BEV Branch Encoder
         self.bev_resBlock1 = ResBlockBEV(
             32, 64, 0.2, pooling=True, drop_out=False, kernel_size=(2, 2)
         )
@@ -264,53 +113,79 @@ class MFMOS(nn.Module):
         self.bev_resBlock3 = ResBlockBEV(
             128, 256, 0.2, pooling=True, kernel_size=(2, 2)
         )
+        self.bev_resBlock4 = ResBlockBEV(
+            256, 256, 0.2, pooling=True, kernel_size=(2, 2)
+        )
+        self.bev_resBlock5 = ResBlockBEV(
+            256, 256, 0.2, pooling=False, kernel_size=(2, 2)
+        )
 
+        # BEV Branch Decoder
         self.bev_upBlock1 = UpBlockBEV(256, 128, 0.2)
-        self.bev_upBlock2 = UpBlockBEV(128, 64, 0.2)
-        self.bev_upBlock3 = UpBlockBEV(64, 32, 0.2, drop_out=False)
+        self.bev_upBlock2 = UpBlockBEV(128, 128, 0.2)
+        self.bev_upBlock3 = UpBlockBEV(128, 64, 0.2)
+        self.bev_upBlock4 = UpBlockBEV(64, 32, 0.2, drop_out=False)
 
+        # BEV Residual Image(Temporal) Branch
+        self.bev_RI_downCntx = ResContextBlock(self.n_input_scans, 32)
+        self.bev_RI_resBlock1 = ResBlockBEV(
+            32, 64, 0.2, pooling=True, drop_out=False, kernel_size=(2, 2)
+        )
+        self.bev_RI_resBlock2 = ResBlockBEV(
+            64, 128, 0.2, pooling=True, kernel_size=(2, 2)
+        )
+        self.bev_RI_resBlock3 = ResBlockBEV(
+            128, 256, 0.2, pooling=True, kernel_size=(2, 2)
+        )
+        self.bev_RI_resBlock4 = ResBlockBEV(
+            256, 256, 0.2, pooling=True, kernel_size=(2, 2)
+        )
+        self.bev_RI_resBlock5 = ResBlockBEV(
+            256, 512, 0.2, pooling=False, kernel_size=(2, 2)
+        )
+
+        # Range Branch 최종 로짓
         self.bev_logits3 = nn.Conv2d(32, nclasses, kernel_size=(1, 1))
-        self.movable_bev_logits = nn.Conv2d(32, movable_nclasses, kernel_size=(1, 1))
+        self.bev_movable_logits = nn.Conv2d(32, movable_nclasses, kernel_size=(1, 1))
 
         # ---------------------------
-        # Attention (MGA) 설정
+        # Attention (MGA) 설정 (for Range)
         # ---------------------------
-        if self.use_attention == "MGA":
-            self.avg_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.avg_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.conv1x1_conv1_channel_wise = nn.Conv2d(32, 32, 1, bias=True)
+        self.conv1x1_conv1_spatial = nn.Conv2d(32, 1, 1, bias=True)
+        self.conv1x1_layer0_channel_wise = nn.Conv2d(64, 64, 1, bias=True)
+        self.conv1x1_layer0_spatial = nn.Conv2d(64, 1, 1, bias=True)
+        self.conv1x1_layer1_channel_wise = nn.Conv2d(128, 128, 1, bias=True)
+        self.conv1x1_layer1_spatial = nn.Conv2d(128, 1, 1, bias=True)
+        self.conv1x1_layer2_channel_wise = nn.Conv2d(256, 256, 1, bias=True)
+        self.conv1x1_layer2_spatial = nn.Conv2d(256, 1, 1, bias=True)
+        self.conv1x1_layer3_channel_wise = nn.Conv2d(256, 256, 1, bias=True)
+        self.conv1x1_layer3_spatial = nn.Conv2d(256, 1, 1, bias=True)
+        self.conv1x1_layer4_channel_wise = nn.Conv2d(256, 256, 1, bias=True)
+        self.conv1x1_layer4_spatial = nn.Conv2d(256, 1, 1, bias=True)
 
-            self.conv1x1_conv1_channel_wise = nn.Conv2d(32, 32, 1, bias=True)
-            self.conv1x1_conv1_spatial = nn.Conv2d(32, 1, 1, bias=True)
-
-            self.conv1x1_layer0_channel_wise = nn.Conv2d(64, 64, 1, bias=True)
-            self.conv1x1_layer0_spatial = nn.Conv2d(64, 1, 1, bias=True)
-
-            self.conv1x1_layer1_channel_wise = nn.Conv2d(128, 128, 1, bias=True)
-            self.conv1x1_layer1_spatial = nn.Conv2d(128, 1, 1, bias=True)
-
-            self.conv1x1_layer2_channel_wise = nn.Conv2d(256, 256, 1, bias=True)
-            self.conv1x1_layer2_spatial = nn.Conv2d(256, 1, 1, bias=True)
-
-            self.conv1x1_layer3_channel_wise = nn.Conv2d(256, 256, 1, bias=True)
-            self.conv1x1_layer3_spatial = nn.Conv2d(256, 1, 1, bias=True)
-
-            self.conv1x1_layer4_channel_wise = nn.Conv2d(256, 256, 1, bias=True)
-            self.conv1x1_layer4_spatial = nn.Conv2d(256, 1, 1, bias=True)
-
-            self.conv1x1_bev_channel_wise = nn.Conv2d(32, 32, 1, bias=True)
-            self.conv1x1_bev_spatial = nn.Conv2d(32, 1, 1, bias=True)
-            self.conv1x1_bev_layer1_channel_wise = nn.Conv2d(64, 64, 1, bias=True)
-            self.conv1x1_bev_layer1_spatial = nn.Conv2d(64, 1, 1, bias=True)
-            self.conv1x1_bev_layer2_channel_wise = nn.Conv2d(128, 128, 1, bias=True)
-            self.conv1x1_bev_layer2_spatial = nn.Conv2d(128, 1, 1, bias=True)
-        else:
-            pass
+        # ---------------------------
+        # Attention (MGA) 설정 (for BEV)
+        # ---------------------------
+        self.bev_avg_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.bev_conv1x1_conv1_channel_wise = nn.Conv2d(32, 32, 1, bias=True)
+        self.bev_conv1x1_conv1_spatial = nn.Conv2d(32, 1, 1, bias=True)
+        self.bev_conv1x1_layer0_channel_wise = nn.Conv2d(64, 64, 1, bias=True)
+        self.bev_conv1x1_layer0_spatial = nn.Conv2d(64, 1, 1, bias=True)
+        self.bev_conv1x1_layer1_channel_wise = nn.Conv2d(128, 128, 1, bias=True)
+        self.bev_conv1x1_layer1_spatial = nn.Conv2d(128, 1, 1, bias=True)
+        self.bev_conv1x1_layer2_channel_wise = nn.Conv2d(256, 256, 1, bias=True)
+        self.bev_conv1x1_layer2_spatial = nn.Conv2d(256, 1, 1, bias=True)
+        self.bev_conv1x1_layer3_channel_wise = nn.Conv2d(256, 256, 1, bias=True)
+        self.bev_conv1x1_layer3_spatial = nn.Conv2d(256, 1, 1, bias=True)
+        self.bev_conv1x1_layer4_channel_wise = nn.Conv2d(256, 256, 1, bias=True)
+        self.bev_conv1x1_layer4_spatial = nn.Conv2d(256, 1, 1, bias=True)
 
     def encoder_attention_module_MGA_tmc(
         self, img_feat, flow_feat, conv1x1_channel_wise, conv1x1_spatial
     ):
-        """
-        간단한 MGA 예시: (spatial + channel attention)
-        """
+
         # spatial attention
         flow_feat_map = conv1x1_spatial(flow_feat)
         flow_feat_map = nn.Sigmoid()(flow_feat_map)
@@ -326,11 +201,6 @@ class MFMOS(nn.Module):
         return final_feat
 
     def forward(self, x_range, x_bev):
-        """
-        x_range: [B, 5 + n_input_scans, H, W] 형태로 Range + Residual 합쳐서 들어온다고 가정
-                 (예: 5채널(range) + 8채널(residual) = 13채널)
-        x_bev:   [B, bev_in_ch(=13), 360, 360] 형태로 BEV 입력
-        """
         # ---------------------------
         # Range + Residual Branch
         # ---------------------------
@@ -360,59 +230,44 @@ class MFMOS(nn.Module):
         downCntx = self.downCntx3(downCntx)
 
         # Attention 결합
-        if self.use_attention == "MGA":
-            downCntx = self.encoder_attention_module_MGA_tmc(
-                RI_downCntx,
-                downCntx,
-                self.conv1x1_conv1_channel_wise,
-                self.conv1x1_conv1_spatial,
-            )
-        else:
-            downCntx += RI_downCntx
+        downCntx = self.encoder_attention_module_MGA_tmc(
+            RI_downCntx,
+            downCntx,
+            self.conv1x1_conv1_channel_wise,
+            self.conv1x1_conv1_spatial,
+        )
 
         down0c, down0b = self.resBlock1(downCntx)
-        if self.use_attention == "MGA":
-            down0c = self.encoder_attention_module_MGA_tmc(
-                down0c,
-                RI_down0c,
-                self.conv1x1_layer0_channel_wise,
-                self.conv1x1_layer0_spatial,
-            )
-        else:
-            down0c += RI_down0c
+        down0c = self.encoder_attention_module_MGA_tmc(
+            down0c,
+            RI_down0c,
+            self.conv1x1_layer0_channel_wise,
+            self.conv1x1_layer0_spatial,
+        )
 
         down1c, down1b = self.resBlock2(down0c)
-        if self.use_attention == "MGA":
-            down1c = self.encoder_attention_module_MGA_tmc(
-                down1c,
-                RI_down1c,
-                self.conv1x1_layer1_channel_wise,
-                self.conv1x1_layer1_spatial,
-            )
-        else:
-            down1c += RI_down1c
+        down1c = self.encoder_attention_module_MGA_tmc(
+            down1c,
+            RI_down1c,
+            self.conv1x1_layer1_channel_wise,
+            self.conv1x1_layer1_spatial,
+        )
 
         down2c, down2b = self.resBlock3(down1c)
-        if self.use_attention == "MGA":
-            down2c = self.encoder_attention_module_MGA_tmc(
-                down2c,
-                RI_down2c,
-                self.conv1x1_layer2_channel_wise,
-                self.conv1x1_layer2_spatial,
-            )
-        else:
-            down2c += RI_down2c
+        down2c = self.encoder_attention_module_MGA_tmc(
+            down2c,
+            RI_down2c,
+            self.conv1x1_layer2_channel_wise,
+            self.conv1x1_layer2_spatial,
+        )
 
         down3c, down3b = self.resBlock4(down2c)
-        if self.use_attention == "MGA":
-            down3c = self.encoder_attention_module_MGA_tmc(
-                down3c,
-                RI_down3c,
-                self.conv1x1_layer3_channel_wise,
-                self.conv1x1_layer3_spatial,
-            )
-        else:
-            down3c += RI_down3c
+        down3c = self.encoder_attention_module_MGA_tmc(
+            down3c,
+            RI_down3c,
+            self.conv1x1_layer3_channel_wise,
+            self.conv1x1_layer3_spatial,
+        )
 
         down5c = self.resBlock5(down3c)
 
@@ -423,56 +278,131 @@ class MFMOS(nn.Module):
         up1e = self.upBlock4(up2e, down0b)
 
         logits_ = self.logits3(up1e)
-        logits = F.softmax(logits_, dim=1)
+        range_probs = F.softmax(logits_, dim=1)
 
         movable_logits_ = self.movable_logits(up1e)
-        movable_logits = F.softmax(movable_logits_, dim=1)
+        range_movable_probs = F.softmax(movable_logits_, dim=1)
 
         # ---------------------------
         # BEV Branch (새로 추가)
         # ---------------------------
-        # [B, 13, 360, 360]를 가정
-        bev_down0 = self.bev_downCntx(x_bev)
-        bev_down0 = self.bev_downCntx2(bev_down0)
-        bev_down0 = self.bev_downCntx3(bev_down0)
-        if self.use_attention == "MGA":
-            bev_down0 = self.encoder_attention_module_MGA_tmc(
-                bev_down0,
-                bev_down0,
-                self.conv1x1_bev_channel_wise,
-                self.conv1x1_bev_spatial,
-            )
+        # x_bev: [B, bev_channel + n_input_scans, bev_height, bev_width]
+        current_bev_image = x_bev[:, : self.bev_channel, :, :]  # BEV 이미지 5채널
+        bev_residual_images = x_bev[
+            :, self.bev_channel :, :, :
+        ]  # 잔차 이미지 (n_input_scans)
 
-        bev_down1c, bev_down1b = self.bev_resBlock1(bev_down0)
-        if self.use_attention == "MGA":
-            bev_down1c = self.encoder_attention_module_MGA_tmc(
-                bev_down1c,
-                bev_down1c,
-                self.conv1x1_bev_layer1_channel_wise,
-                self.conv1x1_bev_layer1_spatial,
-            )
+        # BEV Residual Branch
+        bev_RI_downCntx = self.bev_RI_downCntx(bev_residual_images)
+        bev_RI_down0c, bev_RI_down0b = self.bev_RI_resBlock1(bev_RI_downCntx)
+        bev_RI_down1c, bev_RI_down1b = self.bev_RI_resBlock2(bev_RI_down0c)
+        bev_RI_down2c, bev_RI_down2b = self.bev_RI_resBlock3(bev_RI_down1c)
+        bev_RI_down3c, bev_RI_down3b = self.bev_RI_resBlock4(bev_RI_down2c)
+        bev_RI_down4c = self.bev_RI_resBlock5(bev_RI_down3c)
 
-        bev_down2c, bev_down2b = self.bev_resBlock2(bev_down1c)
-        if self.use_attention == "MGA":
-            bev_down2c = self.encoder_attention_module_MGA_tmc(
-                bev_down2c,
-                bev_down2c,
-                self.conv1x1_bev_layer2_channel_wise,
-                self.conv1x1_bev_layer2_spatial,
-            )
+        # BEV Main Branch
+        bev_downCntx = self.bev_downCntx(current_bev_image)
+        bev_downCntx = self.bev_downCntx2(bev_downCntx)
+        bev_downCntx = self.bev_downCntx3(bev_downCntx)
+        bev_downCntx = self.bev_metaConv(
+            data=bev_downCntx,
+            coord_data=current_bev_image,
+            data_channels=bev_downCntx.size(1),
+            coord_channels=current_bev_image.size(1),
+            kernel_size=3,
+        )
 
-        bev_down3c, bev_down3b = self.bev_resBlock3(bev_down2c)
-        # (원하는 경우 여기서도 추가 attention 적용 가능)
+        # Attention 결합: BEV Residual 정보와 결합 (유사하게 Range에서 처리한 방식)
+        bev_downCntx = self.encoder_attention_module_MGA_tmc(
+            bev_RI_downCntx,
+            bev_downCntx,
+            self.bev_conv1x1_conv1_channel_wise,
+            self.bev_conv1x1_conv1_spatial,
+        )
 
-        bev_up2e = self.bev_upBlock1(bev_down3c, bev_down3b)
-        bev_up1e = self.bev_upBlock2(bev_up2e, bev_down2b)
-        bev_up0e = self.bev_upBlock3(bev_up1e, bev_down1b)
+        # BEV Branch Encoder
+        bev_down0c, bev_down0b = self.bev_resBlock1(bev_downCntx)
+        bev_down0c = self.encoder_attention_module_MGA_tmc(
+            bev_down0c,
+            bev_RI_down0c,
+            self.bev_conv1x1_layer0_channel_wise,
+            self.bev_conv1x1_layer0_spatial,
+        )
 
-        bev_logits_ = self.bev_logits3(bev_up0e)
-        bev_logits = F.softmax(bev_logits_, dim=1)
+        bev_down1c, bev_down1b = self.bev_resBlock2(bev_down0c)
+        bev_down1c = self.encoder_attention_module_MGA_tmc(
+            bev_down1c,
+            bev_RI_down1c,
+            self.bev_conv1x1_layer1_channel_wise,
+            self.bev_conv1x1_layer1_spatial,
+        )
 
-        movable_bev_logits_ = self.movable_bev_logits(bev_up0e)
-        movable_bev_logits = F.softmax(movable_bev_logits_, dim=1)
+        bev_down2c, bev_down2b = self.bev_resBlock3(bev_down1c)
+        bev_down2c = self.encoder_attention_module_MGA_tmc(
+            bev_down2c,
+            bev_RI_down2c,
+            self.bev_conv1x1_layer2_channel_wise,
+            self.bev_conv1x1_layer2_spatial,
+        )
 
-        # 4가지 출력 (quad branch)
-        return logits, movable_logits, bev_logits, movable_bev_logits
+        bev_down3c, bev_down3b = self.bev_resBlock4(bev_down2c)
+        bev_down3c = self.encoder_attention_module_MGA_tmc(
+            bev_down3c,
+            bev_RI_down3c,
+            self.bev_conv1x1_layer3_channel_wise,
+            self.bev_conv1x1_layer3_spatial,
+        )
+
+        bev_down5c = self.bev_resBlock5(bev_down3c)
+
+        # BEV Branch Decoder
+        bev_up4e = self.bev_upBlock1(bev_down5c, bev_down3b)
+        bev_up3e = self.bev_upBlock2(bev_up4e, bev_down2b)
+        bev_up2e = self.bev_upBlock3(bev_up3e, bev_down1b)
+        bev_up1e = self.bev_upBlock4(bev_up2e, bev_down0b)
+
+        # BEV Branch 최종 로짓
+        bev_logits_ = self.bev_logits3(bev_up1e)
+        bev_probs = F.softmax(bev_logits_, dim=1)
+
+        bev_movable_logits_ = self.bev_movable_logits(bev_up1e)
+        bev_movable_probs = F.softmax(bev_movable_logits_, dim=1)
+
+        # 최종 출력: Range와 BEV 각각의 Moving, Movable 로짓
+        return range_probs, range_movable_probs, bev_probs, bev_movable_probs
+
+
+if __name__ == "__main__":
+
+    # 더미 파라미터 설정
+    params = {
+        "train": {
+            "n_input_scans": 8,  # residual 스캔 개수
+            "batch_size": 1,
+        },
+    }
+    nclasses = 3
+    movable_nclasses = 3
+
+    # 모델 인스턴스 생성 (point_refine=False)
+    model = MFMOS(nclasses, movable_nclasses, params, point_refine=False)
+    if torch.cuda.is_available():
+        model = model.cuda()
+
+    # 랜덤 입력 텐서 생성
+    x_range = torch.rand(params["train"]["batch_size"], 13, 64, 2048)
+    x_bev = torch.rand(params["train"]["batch_size"], 13, 768, 768)
+    if torch.cuda.is_available():
+        x_range = x_range.cuda()
+        x_bev = x_bev.cuda()
+
+    # 모델 추론
+    range_logits, range_movable_logits, bev_logits, bev_movable_logits = model(
+        x_range, x_bev
+    )
+
+    # 출력 텐서들의 shape 출력
+    print("Range logits shape:", range_logits.shape)
+    print("Range movable logits shape:", range_movable_logits.shape)
+    print("BEV logits shape:", bev_logits.shape)
+    print("BEV movable logits shape:", bev_movable_logits.shape)

@@ -1,7 +1,7 @@
 #!/bin/bash
 
-DatasetPath=/home/work_docker/KITTI/dataset
-ModelPath=/home/work_docker/MF-MOS/log/good
+DatasetPath=/home/ssd_4tb/minjae/KITTI/dataset
+ModelPath=/home/work/MF-MOS/log/Train/2025-3-01-15:30
 SavePath=./log/Valid/predictions/
 SPLIT=valid # valid or test
 
@@ -10,5 +10,5 @@ export CUDA_VISIBLE_DEVICES=0 && python3 infer.py -d $DatasetPath \
                                                   -m $ModelPath \
                                                   -l $SavePath \
                                                   -s $SPLIT 
-                                                #   --movable  \
+                                                  # --movable  
                                                 #   --pointrefine 

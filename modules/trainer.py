@@ -302,7 +302,7 @@ class Trainer:
     def train(self):
         self.init_evaluator()
         for epoch in range(self.epoch, self.ARCH["train"]["max_epochs"]):
-            self.parser.train_sampler.set_epoch(epoch)
+            # self.parser.train_sampler.set_epoch(epoch)
             range_acc, range_iou, bev_acc, bev_iou, loss_total, update_mean = (
                 self.train_epoch(
                     train_loader=self.parser.get_train_set(),
@@ -368,7 +368,7 @@ class Trainer:
                     img_summary=self.ARCH["train"]["save_scans"],
                     imgs=rand_img,
                 )
-            dist.barrier()
+            # dist.barrier()
         print("Finished Training")
         return
 
@@ -413,9 +413,35 @@ class Trainer:
             (path_seq, path_name, unproj_n_points),  # ex. '08', '000123.npy', 122319
             (proj_x, proj_y),  # (150000, ), (150000, )
             (bev_proj_x, bev_proj_y),  # (150000, ), (150000, )
-            (proj_range, bev_range),  # (64, 2048), (360, 360)
+            (proj_range, bev_range),  # (H_range, W_range), (H_BEV, W_BEV)
             (unproj_range, bev_unproj_range),  # (150000, ), (150000, )
         ) in enumerate(train_loader):
+
+            print(
+                proj_x.shape,
+                proj_y.shape,
+                proj_range.shape,
+                unproj_range.shape,
+                bev_proj_x.shape,
+                bev_proj_y.shape,
+                bev_range.shape,
+                bev_unproj_range.shape,
+            )
+
+            print("\n---------------------------------------")
+            print(
+                np.unique(proj_x),
+                np.unique(proj_y),
+                proj_range[:10],
+                unproj_range[:10],
+                np.unique(bev_proj_x),
+                np.unique(bev_proj_y),
+                bev_range[:10],
+                bev_unproj_range[:10],
+                sep="\n",
+            )
+            print("---------------------------------------")
+
             self.data_time_t.update(time.time() - end)
             if self.gpu:
                 proj_full = proj_full.cuda()
@@ -606,7 +632,7 @@ class Trainer:
                 ),  # ex. '08', '000123.npy', 122319
                 (proj_x, proj_y),  # (150000, ), (150000, )
                 (bev_proj_x, bev_proj_y),  # (150000, ), (150000, )
-                (proj_range, bev_range),  # (64, 2048), (360, 360)
+                (proj_range, bev_range),  # (H_range, W_range), (H_BEV, W_BEV)
                 (unproj_range, bev_unproj_range),  # (150000, ), (150000, )
             ) in enumerate(tqdm(val_loader, desc="Validation:", ncols=80)):
                 if self.gpu:

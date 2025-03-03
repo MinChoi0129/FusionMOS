@@ -14,9 +14,9 @@ DEBUG_MODE = False
 
 print("device count: ", torch.cuda.device_count())
 
-if not DEBUG_MODE:
-    dist.init_process_group(backend="nccl")
-    print("world_size: ", dist.get_world_size())
+# if not DEBUG_MODE:
+#     dist.init_process_group(backend="nccl")
+#     print("world_size: ", dist.get_world_size())
 
 
 # from modules.SalsaNextWithMotionAttention import *
@@ -44,8 +44,8 @@ if __name__ == "__main__":
     FLAGS, unparsed = parser.parse_known_args()
 
     local_rank = 0
-    if not DEBUG_MODE:
-        local_rank = int(os.environ["LOCAL_RANK"])
+    # if not DEBUG_MODE:
+    #     local_rank = int(os.environ["LOCAL_RANK"])
 
     torch.cuda.set_device(local_rank)
     print(f"Local Rank {local_rank}를 설정합니다.")

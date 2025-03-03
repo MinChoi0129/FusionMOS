@@ -76,6 +76,7 @@ class User:
         with torch.no_grad():
             torch.nn.Module.dump_patches = True
             if not point_refine:
+                # 모델 초기화 및 DataParallel 래핑
                 self.model = MFMOS(
                     nclasses=self.parser.get_n_classes(),
                     movable_nclasses=self.parser.get_n_classes(movable=True),
@@ -83,12 +84,25 @@ class User:
                     num_batch=self.infer_batch_size,
                 )
                 self.model = nn.DataParallel(self.model)
+
                 checkpoint = "MFMOS_valid_best"
                 w_dict = torch.load(
                     f"{self.modeldir}/{checkpoint}",
                     map_location=lambda storage, loc: storage,
                 )
-                self.model.load_state_dict(w_dict["state_dict"], strict=True)
+
+                # 체크포인트의 state_dict 키에 'module.' 접두어가 없는 경우 붙여주기
+                state_dict = w_dict["state_dict"]
+                new_state_dict = {}
+                for k, v in state_dict.items():
+                    # 만약 키가 이미 'module.'로 시작하지 않는다면 접두어 추가
+                    if not k.startswith("module."):
+                        new_state_dict[f"module.{k}"] = v
+                    else:
+                        new_state_dict[k] = v
+
+                # 수정된 state_dict로 모델에 로드
+                self.model.load_state_dict(new_state_dict, strict=True)
 
                 self.set_knn_post()
             else:
@@ -232,7 +246,7 @@ class User:
                 (path_seq, path_name, npoints),  # ex. '08', '000123.npy', 122319
                 (proj_x, proj_y),  # (150000, ), (150000, )
                 (bev_proj_x, bev_proj_y),  # (150000, ), (150000, )
-                (proj_range, bev_range),  # (64, 2048), (360, 360)
+                (proj_range, bev_range),  # (H_range, W_range), (H_BEV, W_BEV)
                 (unproj_range, bev_unproj_range),  # (150000, ), (150000, )
             ) in enumerate(tqdm(loader, ncols=80)):
 
@@ -268,14 +282,74 @@ class User:
                 range_moving, range_movable, bev_moving, bev_movable = self.model(
                     proj_full, bev_full
                 )
+
+                import matplotlib.pyplot as plt
+
+                print(
+                    range_moving.cpu().numpy().shape,
+                    np.min(range_moving.cpu().numpy()),
+                    np.max(range_moving.cpu().numpy()),
+                )
+                print(
+                    range_movable.cpu().numpy().shape,
+                    np.min(range_movable.cpu().numpy()),
+                    np.max(range_movable.cpu().numpy()),
+                )
+                print(
+                    bev_moving.cpu().numpy().shape,
+                    np.min(bev_moving.cpu().numpy()),
+                    np.max(bev_moving.cpu().numpy()),
+                )
+                print(
+                    bev_movable.cpu().numpy().shape,
+                    np.min(bev_movable.cpu().numpy()),
+                    np.max(bev_movable.cpu().numpy()),
+                )
+
+                plt.imsave(
+                    "/home/work/MF-MOS/debug_img/range_moving.png",
+                    range_moving[0].permute(1, 2, 0).cpu().numpy(),
+                )
+                plt.imsave(
+                    "/home/work/MF-MOS/debug_img/range_movable.png",
+                    range_movable[0].permute(1, 2, 0).cpu().numpy(),
+                )
+                plt.imsave(
+                    "/home/work/MF-MOS/debug_img/bev_moving.png",
+                    bev_moving[0].permute(1, 2, 0).cpu().numpy(),
+                )
+                plt.imsave(
+                    "/home/work/MF-MOS/debug_img/bev_movable.png",
+                    bev_movable[0].permute(1, 2, 0).cpu().numpy(),
+                )
+
+                print(
+                    proj_labels.shape,
+                    bev_labels.shape,
+                    proj_movable_labels.shape,
+                    bev_movable_labels.shape,
+                )
+                plt.imsave(
+                    "/home/work/MF-MOS/debug_img/proj_labels.png",
+                    proj_labels[0].cpu().numpy(),
+                )
+                plt.imsave(
+                    "/home/work/MF-MOS/debug_img/bev_labels.png",
+                    bev_labels[0].cpu().numpy(),
+                )
+                plt.imsave(
+                    "/home/work/MF-MOS/debug_img/proj_movable_labels.png",
+                    proj_movable_labels[0].cpu().numpy(),
+                )
+                plt.imsave(
+                    "/home/work/MF-MOS/debug_img/bev_movable_labels.png",
+                    bev_movable_labels[0].cpu().numpy(),
+                )
+
                 res = time.time() - end
                 cnn.append(res)
 
-                # 개별 뷰에 대해 argmax 계산 (확률 맵에서 최고 확률 클래스 선택)
-                proj_argmax = range_moving[0].argmax(dim=0)
-                bev_argmax = bev_moving[0].argmax(dim=0)
-                movable_proj_argmax = range_movable[0].argmax(dim=0)
-                movable_bev_argmax = bev_movable[0].argmax(dim=0)
+                range_moving
 
                 # ======= Fusion 추가 =======
                 # 방법: 두 뷰의 확률을 단순 평균한 후, argmax 계산 (더 부드러운 결합)

@@ -219,7 +219,7 @@ class MetaKernel(nn.Module):
         self.channel_list = [16, 32]
         self.use_norm = False
         self.coord_channels = coord_channels
-        print("meta num_batch is : ", self.num_batch)
+
         # TODO: Best to put this part of the definition in __init__ function ?
         self.conv1 = nn.Conv2d(
             self.coord_channels,
@@ -328,7 +328,6 @@ class MetaKernel(nn.Module):
                 self.W,
             ),
         )
-        # ic(sample_reshape.size())
 
         center_coord_expand = torch.unsqueeze(center_coord, dim=2)  # expand_dims
         # ic(center_coord_expand.size())
