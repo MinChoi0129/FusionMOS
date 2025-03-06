@@ -3,11 +3,10 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 from common.laserscan import SemLaserScan
-
+from common.bev_laserscan import process_scan_as_bev
 import torch
 import random
-import h5py
-
+import time
 from collections.abc import Sequence, Iterable
 from common.dataset.kitti.utils import load_poses, load_calib
 
@@ -305,66 +304,29 @@ class SemanticKitti(Dataset):
             f"\033[32m Using {self.dataset_size} scans from sequences {self.sequences}\033[0m"
         )
 
-    def __getitem__(self, dataset_index):
-        seq, start_index = self.index_mapping[dataset_index]
-        current_index = start_index
-        current_pose = self.poses[seq][current_index]
-        proj_full = torch.Tensor()
-        bev_full = torch.Tensor()
-        for index in range(start_index, start_index + 1):
-            scan_file = self.scan_files[seq][current_index]
-            label_file = self.label_files[seq][current_index]
-
-            # --------------------------------------------------------------------------
-            # 1) residual_input_scans_id 결정 (원본 코드와 동일 로직)
-            # --------------------------------------------------------------------------
-            residual_input_scans_id = [1 * i for i in range(self.n_input_scans)]
-
-            for i in residual_input_scans_id:
-                exec(
-                    "residual_file_"
-                    + str(i + 1)
-                    + " = "
-                    + "self.residual_files_"
-                    + str(i + 1)
-                    + "[seq][index]"
-                )
-                exec(
-                    "bev_residual_file_"
-                    + str(i + 1)
-                    + " = "
-                    + "self.bev_residual_files_"
-                    + str(i + 1)
-                    + "[seq][index]"
-                )
-
-            index_pose = self.poses[seq][index]
-
-            DA = False
-            flip_sign = False
-            rot = False
-            drop_points = False
-            if self.transform:
-                if random.random() > 0.5:
-                    if random.random() > 0.5:
-                        DA = True
-                    if random.random() > 0.5:
-                        flip_sign = True
-                    if random.random() > 0.5:
-                        rot = True
-                    drop_points = random.uniform(0, 0.5)
+    def get_multiple_data_from_scan(
+        self,
+        mode,
+        config,
+        scan_file=None,
+        label_file=None,
+        index_pose=None,
+        current_pose=None,
+    ):
+        if mode == "Range":
+            DA, flip_sign, drop_points = config
 
             scan = SemLaserScan(
-                self.color_map,
+                sem_color_dict=self.color_map,
                 project=True,
                 H=self.sensor_img_H,
                 W=self.sensor_img_W,
                 fov_up=self.sensor_fov_up,
                 fov_down=self.sensor_fov_down,
+                use_normal=self.use_normal,
                 DA=DA,
                 flip_sign=flip_sign,
                 drop_points=drop_points,
-                use_normal=self.use_normal,
             )
 
             scan.open_scan(
@@ -372,12 +334,21 @@ class SemanticKitti(Dataset):
             )
 
             scan.open_label(label_file)
+            tmp_sem_label = scan.sem_label.copy()
             scan.sem_label = self.map(scan.sem_label, self.learning_map)
             scan.proj_sem_movable_label = scan.proj_sem_label.copy()
             scan.proj_sem_label = self.map(scan.proj_sem_label, self.learning_map)
+
             scan.proj_sem_movable_label = self.map(
                 scan.proj_sem_movable_label, self.movable_learning_map
             )
+            # scan.inst_label = self.map(scan.inst_label, self.movable_learning_map) # 혹시 몰라 실행 안함
+            GTs_moving, GTs_movable = scan.sem_label, self.map(
+                tmp_sem_label, self.movable_learning_map
+            )
+
+            GTs_moving = torch.from_numpy(GTs_moving).long()
+            GTs_movable = torch.from_numpy(GTs_movable).long()
 
             unproj_n_points = scan.points.shape[0]
             proj_range = torch.from_numpy(scan.proj_range).clone()
@@ -392,98 +363,350 @@ class SemanticKitti(Dataset):
             proj_x[:unproj_n_points] = torch.from_numpy(scan.proj_x)
             proj_y = torch.full([self.max_points], -1, dtype=torch.long)
             proj_y[:unproj_n_points] = torch.from_numpy(scan.proj_y)
-            unproj_range = torch.full([self.max_points], -1.0, dtype=torch.float)
-            unproj_range[:unproj_n_points] = torch.from_numpy(scan.unproj_range)
+            # unproj_range = torch.full([self.max_points], -1.0, dtype=torch.float)
+            # unproj_range[:unproj_n_points] = torch.from_numpy(scan.unproj_range)
 
-            #### BEV 처리 ####
-            # 파일 경로 생성 (f-string 사용)
-            bev_bunch_path = os.path.join(
-                "/home/ssd_4tb/minjae/KITTI/test_output_h5",
-                f"{int(seq):02d}",
-                f"{int(current_index):06d}.h5",
+            return (
+                (GTs_moving, GTs_movable),
+                proj_range,
+                proj_xyz,
+                scan.points,
+                proj_remission,
+                proj_mask,
+                proj_labels,
+                proj_movable_labels,
+                # unproj_n_points,
+                proj_x,
+                proj_y,
+                # proj_range,
+                # unproj_range,
             )
 
-            # context manager를 사용해 h5 파일 열기
-            with h5py.File(bev_bunch_path, "r") as bev_h5:
-                # slicing을 통해 필요한 데이터를 한 번에 읽음
-                bev_bunch = bev_h5["bev_composite"][:]  # 전체 배열 읽기
-                bev_proj_x = bev_h5["bev_proj_x"][:]  # 필요한 데이터 읽기
-                bev_proj_y = bev_h5["bev_proj_y"][:]
-                bev_unproj_range = bev_h5["bev_unproj_range"][:]
+        elif mode == "BEV":
+            seq, frame_id = config
 
-            # bev_range는 bev_bunch의 첫번째 요소를 사용 (이미 numpy array임)
-            bev_range = bev_bunch[0]
+            dataset_sequences_path = "/home/ssd_4tb/minjae/KITTI/dataset/sequences"
+            labels_folder = os.path.join(dataset_sequences_path, f"{seq:02d}", "labels")
+            velodyne_folder = os.path.join(
+                dataset_sequences_path, f"{seq:02d}", "velodyne"
+            )
+
+            velodyne_path = os.path.join(velodyne_folder, f"{frame_id:06d}.bin")
+            label_path = os.path.join(labels_folder, f"{frame_id:06d}.label")
+
+            bev_data = process_scan_as_bev(velodyne_path, label_path)
+
+            # slicing을 통해 필요한 데이터를 한 번에 읽음
+            bev_bunch = bev_data["bev_composite"]
+            bev_proj_x = bev_data["bev_proj_x"]
+            bev_proj_y = bev_data["bev_proj_y"]
+            # bev_unproj_range = bev_data["bev_unproj_range"]
+
+            # # bev_range는 bev_bunch의 첫번째 요소를 사용 (이미 numpy array임)
+            # bev_range = bev_bunch[0]
 
             # torch tensor 변환 (불필요한 clone() 제거)
             bev = torch.from_numpy(bev_bunch[:5])
             bev_labels = torch.from_numpy(bev_bunch[5])
             bev_movable_labels = torch.from_numpy(bev_bunch[6])
 
-            for i in residual_input_scans_id:
-                exec(
-                    "proj_residuals_"
-                    + str(i + 1)
-                    + " = torch.Tensor(np.load(residual_file_"
-                    + str(i + 1)
-                    + "))"
-                )
-                exec(
-                    "bev_residuals_"
-                    + str(i + 1)
-                    + " = torch.Tensor(np.load(bev_residual_file_"
-                    + str(i + 1)
-                    + "))"
-                )
-
-            proj = torch.cat(
-                [
-                    proj_range.unsqueeze(0).clone(),
-                    proj_xyz.clone().permute(2, 0, 1),
-                    proj_remission.unsqueeze(0).clone(),
-                ]
+            return (
+                bev,
+                bev_labels,
+                bev_movable_labels,
+                bev_proj_x,
+                bev_proj_y,
+                # bev_range,
+                # bev_unproj_range,
             )
+        else:
+            raise Exception("Wrong mode at 'get_multiple_data_from_scan'")
 
-            proj = (proj - self.sensor_img_means[:, None, None]) / self.sensor_img_stds[
-                :, None, None
-            ]
+    # def __getitem__(self, dataset_index):
+    #     start_time = time.time()
+    #     seq, start_index = self.index_mapping[dataset_index]
+    #     current_index = start_index
+    #     current_pose = self.poses[seq][current_index]
+    #     proj_full = torch.Tensor()
+    #     bev_full = torch.Tensor()
+    #     for index in range(start_index, start_index + 1):
+    #         scan_file = self.scan_files[seq][current_index]
+    #         label_file = self.label_files[seq][current_index]
 
-            bev = (bev - self.sensor_img_means[:, None, None]) / self.sensor_img_stds[
-                :, None, None
-            ]
+    #         # --------------------------------------------------------------------------
+    #         # 1) residual_input_scans_id 결정 (원본 코드와 동일 로직)
+    #         # --------------------------------------------------------------------------
+    #         residual_input_scans_id = [1 * i for i in range(self.n_input_scans)]
 
-            proj_full = torch.cat([proj_full, proj])
-            bev_full = torch.cat([bev_full, bev])
+    #         for i in residual_input_scans_id:
+    #             exec(
+    #                 "residual_file_"
+    #                 + str(i + 1)
+    #                 + " = "
+    #                 + "self.residual_files_"
+    #                 + str(i + 1)
+    #                 + "[seq][index]"
+    #             )
+    #             exec(
+    #                 "bev_residual_file_"
+    #                 + str(i + 1)
+    #                 + " = "
+    #                 + "self.bev_residual_files_"
+    #                 + str(i + 1)
+    #                 + "[seq][index]"
+    #             )
 
-            for i in residual_input_scans_id:
-                proj_full = torch.cat(
-                    [
-                        proj_full,
-                        torch.unsqueeze(eval("proj_residuals_" + str(i + 1)), 0),
-                    ]
-                )
-                bev_full = torch.cat(
-                    [
-                        bev_full,
-                        torch.unsqueeze(eval("bev_residuals_" + str(i + 1)), 0),
-                    ]
-                ).float()
+    #         index_pose = self.poses[seq][index]
 
-        proj_full = proj_full * proj_mask.float()
+    #         DA = False
+    #         flip_sign = False
+    #         drop_points = False
+    #         if self.transform:
+    #             if random.random() > 0.5:
+    #                 if random.random() > 0.5:
+    #                     DA = True
+    #                 if random.random() > 0.5:
+    #                     flip_sign = True
+    #                 if random.random() > 0.5:
+    #                     rot = True
+    #                 drop_points = random.uniform(0, 0.5)
 
-        path_seq, path_name = seq, "%06d.npy" % int(current_index)
+    #         (
+    #             (GTs_moving, GTs_movable),
+    #             proj_range,
+    #             proj_xyz,
+    #             points,
+    #             proj_remission,
+    #             proj_mask,
+    #             proj_labels,
+    #             proj_movable_labels,
+    #             unproj_n_points,
+    #             proj_x,
+    #             proj_y,
+    #             proj_range,
+    #             unproj_range,
+    #         ) = self.get_multiple_data_from_scan(
+    #             "Range",
+    #             [DA, flip_sign, drop_points],
+    #             scan_file,
+    #             label_file,
+    #             index_pose,
+    #             current_pose,
+    #         )
 
-        # --------------------------------------------------------------------------
-        # return
-        # --------------------------------------------------------------------------
+    #         (
+    #             bev,
+    #             bev_labels,
+    #             bev_movable_labels,
+    #             bev_proj_x,
+    #             bev_proj_y,
+    #             bev_range,
+    #             bev_unproj_range,
+    #         ) = self.get_multiple_data_from_scan("BEV", [int(seq), int(current_index)])
+
+    #         for i in residual_input_scans_id:
+    #             exec(
+    #                 "proj_residuals_"
+    #                 + str(i + 1)
+    #                 + " = torch.Tensor(np.load(residual_file_"
+    #                 + str(i + 1)
+    #                 + "))"
+    #             )
+    #             exec(
+    #                 "bev_residuals_"
+    #                 + str(i + 1)
+    #                 + " = torch.Tensor(np.load(bev_residual_file_"
+    #                 + str(i + 1)
+    #                 + "))"
+    #             )
+
+    #         proj = torch.cat(
+    #             [
+    #                 proj_range.unsqueeze(0).clone(),
+    #                 proj_xyz.clone().permute(2, 0, 1),
+    #                 proj_remission.unsqueeze(0).clone(),
+    #             ]
+    #         )
+
+    #         proj = (proj - self.sensor_img_means[:, None, None]) / self.sensor_img_stds[
+    #             :, None, None
+    #         ]
+
+    #         bev = (bev - self.sensor_img_means[:, None, None]) / self.sensor_img_stds[
+    #             :, None, None
+    #         ]
+
+    #         proj_full = torch.cat([proj_full, proj])
+    #         bev_full = torch.cat([bev_full, bev])
+
+    #         for i in residual_input_scans_id:
+    #             proj_full = torch.cat(
+    #                 [
+    #                     proj_full,
+    #                     torch.unsqueeze(eval("proj_residuals_" + str(i + 1)), 0),
+    #                 ]
+    #             )
+    #             bev_full = torch.cat(
+    #                 [
+    #                     bev_full,
+    #                     torch.unsqueeze(eval("bev_residuals_" + str(i + 1)), 0),
+    #                 ]
+    #             ).float()
+
+    #     proj_full = proj_full * proj_mask.float()
+
+    #     path_seq, path_name = seq, "%06d.npy" % int(current_index)
+
+    #     # --------------------------------------------------------------------------
+    #     # return
+    #     # --------------------------------------------------------------------------
+    #     end_time = time.time()
+    #     print(f"Get data time: {end_time - start_time:.6f} sec")
+    #     return (
+    #         (points, (GTs_moving, GTs_movable)),  # (    (n, 3),  (  (n,), (n,)  )    )
+    #         (proj_full, bev_full),  # range (13, H, W) | bev (13, H_bev, W_bev)
+    #         (proj_labels, proj_movable_labels),  # range (H, W), (H, W)
+    #         (bev_labels, bev_movable_labels),  # bev (H_bev, W_bev), (H_bev, W_bev)
+    #         (path_seq, path_name, unproj_n_points),  # ex. '08', '000123.npy', 122319
+    #         (proj_x, proj_y),  # (150000, ), (150000, )
+    #         (bev_proj_x, bev_proj_y),  # (150000, ), (150000, )
+    #         (proj_xyz, bev[1:4].permute(1, 2, 0)),  # (H, W, 3), (H_bev, W_bev, 3)
+    #         (proj_range, bev_range),  # (H, W), (H_bev, W_bev)
+    #         (unproj_range, bev_unproj_range),  # (150000, ), (150000, )
+    #     )
+
+    def __getitem__(self, dataset_index):
+        start_time = time.time()
+        # 인덱스 매핑 및 현재 시퀀스, 인덱스, 포즈 가져오기
+        seq, start_index = self.index_mapping[dataset_index]
+        current_index = start_index
+        current_pose = self.poses[seq][current_index]
+
+        scan_file = self.scan_files[seq][current_index]
+        label_file = self.label_files[seq][current_index]
+
+        # residual_input_scans_id 결정 (예: [0, 1, 2, ..., n_input_scans-1])
+        residual_ids = list(range(self.n_input_scans))
+
+        # exec 대신 getattr를 사용하여 residual 파일 경로를 리스트로 가져옵니다.
+        residual_files = [
+            getattr(self, f"residual_files_{i+1}")[seq][current_index]
+            for i in residual_ids
+        ]
+        bev_residual_files = [
+            getattr(self, f"bev_residual_files_{i+1}")[seq][current_index]
+            for i in residual_ids
+        ]
+
+        index_pose = self.poses[seq][current_index]
+
+        # 변형(augmentation) 플래그 결정
+        DA = False
+        flip_sign = False
+        drop_points = False
+        if self.transform:
+            if random.random() > 0.5:
+                if random.random() > 0.5:
+                    DA = True
+                if random.random() > 0.5:
+                    flip_sign = True
+                if random.random() > 0.5:
+                    rot = True  # rot 변수는 사용 여부에 맞게 처리하세요.
+                drop_points = random.uniform(0, 0.5)
+
+        # Range 스캔 데이터 가져오기
+        (
+            (GTs_moving, GTs_movable),
+            proj_range,
+            proj_xyz,
+            points,
+            proj_remission,
+            proj_mask,
+            proj_labels,
+            proj_movable_labels,
+            # unproj_n_points,
+            proj_x,
+            proj_y,
+            # _,
+            # unproj_range,
+        ) = self.get_multiple_data_from_scan(
+            "Range",
+            [DA, flip_sign, drop_points],
+            scan_file,
+            label_file,
+            index_pose,
+            current_pose,
+        )
+
+        # BEV 스캔 데이터 가져오기
+        (
+            bev,
+            bev_labels,
+            bev_movable_labels,
+            bev_proj_x,
+            bev_proj_y,
+            # bev_range,
+            # bev_unproj_range,
+        ) = self.get_multiple_data_from_scan("BEV", [int(seq), int(current_index)])
+
+        # residual 파일들을 torch.Tensor로 로드 (리스트 컴프리헨션 사용)
+        proj_residuals = [torch.Tensor(np.load(f)) for f in residual_files]
+        bev_residuals = [torch.Tensor(np.load(f)) for f in bev_residual_files]
+
+        # Range 데이터 구성: proj_range, proj_xyz, proj_remission을 연결
+        proj = torch.cat(
+            [
+                proj_range.unsqueeze(0).clone(),
+                proj_xyz.clone().permute(2, 0, 1),
+                proj_remission.unsqueeze(0).clone(),
+            ],
+            dim=0,
+        )
+        proj = (proj - self.sensor_img_means[:, None, None]) / self.sensor_img_stds[
+            :, None, None
+        ]
+        bev = (bev - self.sensor_img_means[:, None, None]) / self.sensor_img_stds[
+            :, None, None
+        ]
+
+        # residual들을 한 번에 연결 (매 반복마다 cat 호출 대신 리스트에 저장 후 연결)
+        proj_parts = [proj] + [res.unsqueeze(0) for res in proj_residuals]
+        bev_parts = [bev] + [res.unsqueeze(0) for res in bev_residuals]
+
+        proj_tensor = torch.cat(proj_parts, dim=0)
+        bev_tensor = torch.cat(bev_parts, dim=0).float()
+
+        # proj_mask 적용 (broadcasting 적용)
+        proj_tensor = proj_tensor * proj_mask.float()
+
+        # 한 번만 반복하므로 첫 번째 항목을 사용
+        proj_full = proj_tensor
+        bev_full = bev_tensor
+
+        # path_seq = seq
+        # path_name = "%06d.npy" % int(current_index)
+
+        # return (
+        #     (points, (GTs_moving, GTs_movable)),
+        #     (proj_full, bev_full),
+        #     (proj_labels, proj_movable_labels),
+        #     (bev_labels, bev_movable_labels),
+        #     (path_seq, path_name, unproj_n_points),
+        #     (proj_x, proj_y),
+        #     (bev_proj_x, bev_proj_y),
+        #     (proj_xyz, bev[1:4].permute(1, 2, 0)),
+        #     (proj_range, bev_range),
+        #     (unproj_range, bev_unproj_range),
+        # )
+        end_time = time.time()
+        # print(f"Dataset getitem time: {end_time - start_time} sec")
         return (
-            (proj_full, bev_full),  # range (13, H, W) | bev (13, H_bev, W_bev)
-            (proj_labels, proj_movable_labels),  # range (H, W), (H, W)
-            (bev_labels, bev_movable_labels),  # bev (H_bev, W_bev), (H_bev, W_bev)
-            (path_seq, path_name, unproj_n_points),  # ex. '08', '000123.npy', 122319
-            (proj_x, proj_y),  # (150000, ), (150000, )
-            (bev_proj_x, bev_proj_y),  # (150000, ), (150000, )
-            (proj_range, bev_range),  # (64, 2048), (1024, 1024)
-            (unproj_range, bev_unproj_range),  # (150000, ), (150000, )
+            (points, (GTs_moving, GTs_movable)),
+            (proj_full, bev_full),
+            (proj_labels, proj_movable_labels),
+            (bev_labels, bev_movable_labels),
+            (proj_x, proj_y),
+            (bev_proj_x, bev_proj_y),
         )
 
     def __len__(self):
@@ -491,29 +714,30 @@ class SemanticKitti(Dataset):
 
     @staticmethod
     def map(label, mapdict):
-        # put label from original values to xentropy
-        # or vice-versa, depending on dictionary values
-        # make learning map a lookup table
-        maxkey = 0
-        for key, data in mapdict.items():
-            if isinstance(data, list):
-                nel = len(data)
-            else:
-                nel = 1
-            if key > maxkey:
-                maxkey = key
-        # +100 hack making lut bigger just in case there are unknown labels
-        if nel > 1:
-            lut = np.zeros((maxkey + 100, nel), dtype=np.int32)
-        else:
-            lut = np.zeros((maxkey + 100), dtype=np.int32)
-        for key, data in mapdict.items():
+        """
+        주어진 mapdict에 따라 label 배열을 매핑합니다.
+        - mapdict의 최대 key와 label 배열의 최대값 중 큰 값에 +1 (그리고 추가 여유를 위해 +100)을 하여 lut의 크기를 결정합니다.
+        - 존재하지 않는 값은 기본값 0으로 처리합니다.
+        - 만약 mapdict의 값이 리스트라면 첫 번째 값을 사용합니다.
+        """
+        # mapdict의 최대 key값과 label 배열의 최대값을 구합니다.
+        max_key = max(mapdict.keys())
+        label_max = np.max(label)
+        # lut 크기를 결정: 두 값 중 큰 값 +1, 그리고 여유분 +100
+        table_size = max(max_key, label_max) + 1 + 100
+        lut = np.zeros(table_size, dtype=np.int32)
+
+        # lookup table 생성: key에 해당하는 위치에 value 할당
+        for key, value in mapdict.items():
             try:
-                lut[key] = data
+                if isinstance(value, list):
+                    lut[key] = value[0]
+                else:
+                    lut[key] = value
             except IndexError:
-                print("Wrong key ", key)
-        # do the mapping
-        return lut[label]
+                print("Wrong key", key)
+        # label 배열에 대해 lookup table 적용
+        return np.take(lut, label)
 
     def remove_few_static_frames(self):
         # Developed by Jiadai Sun 2021-11-07

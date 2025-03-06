@@ -6,9 +6,6 @@ import numpy as np
 import random
 from scipy.spatial.transform import Rotation as R
 
-# import math
-# import time
-
 
 class LaserScan:
     """Class that contains LaserScan with x,y,z,r,intensity"""
@@ -19,7 +16,7 @@ class LaserScan:
         self,
         project=False,
         H=64,
-        W=1024,
+        W=2048,
         fov_up=3.0,
         fov_down=-25.0,
         DA=False,
@@ -320,7 +317,7 @@ class SemLaserScan(LaserScan):
         sem_color_dict=None,
         project=False,
         H=64,
-        W=1024,
+        W=2048,
         fov_up=3.0,
         fov_down=-25.0,
         max_classes=300,

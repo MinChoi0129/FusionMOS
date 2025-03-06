@@ -1,0 +1,27 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Train Script",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/train.py",
+            "args": [
+                "--dataset",
+                "/home/ssd_4tb/minjae/KITTI/dataset",
+                "--arch_cfg",
+                "./train_yaml/ddp_mos_coarse_stage.yml",
+                "--data_cfg",
+                "./config/labels/semantic-kitti-mos.raw.yaml",
+                "--log",
+                "./log/Train"
+            ],
+            "env": {
+                "SETUPTOOLS_USE_DISTUTILS": "stdlib",
+                "OMP_NUM_THREADS": "8",
+                "CUDA_VISIBLE_DEVICES": "0"
+            },
+            "console": "integratedTerminal"
+        }
+    ]
+}

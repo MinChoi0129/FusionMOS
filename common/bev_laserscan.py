@@ -1,9 +1,4 @@
-import os
 import numpy as np
-import h5py
-from tqdm import tqdm
-import multiprocessing as mp
-from concurrent.futures import ThreadPoolExecutor
 import torch
 
 # 매핑 딕셔너리 (moving, movable)
@@ -109,7 +104,6 @@ def load_label(label_path):
     return sem_label, inst_label
 
 
-# --- 수정: LaserScan 방식의 BEV 투영 (proj_idx 기록) ---
 def bev_projection_full(
     homo_points, remissions, proj_H, proj_W, max_range=50.0, min_range=2.0
 ):
@@ -173,59 +167,24 @@ def bev_projection_full(
     return bev_range, bev_xyz, bev_remission, x_img, y_img, filtered_dist, proj_idx
 
 
-# --- 끝 ---
-
-
-# --- BevScan 클래스 수정 (label projection를 LaserScan 방식으로 처리) ---
-class BevScan:
+def create_ternary_label(bev_label, mapping_dict):
     """
-    BEV Scan 클래스:
-      - velodyne 스캔과 라벨 파일을 받아 BEV 투영을 수행하여,
-        bev_range, bev_xyz, bev_remission, bev_sem_label과 함께
-        bev_proj_x, bev_proj_y, bev_unproj_range, bev_proj_idx도 생성.
+    bev_label: BEV label 이미지 (2D, -1이면 empty)
+    mapping_dict: 예) moving_learning_map 또는 movable_learning_map
+    반환: 삼진 이미지: 빈 공간은 0, 그 외에는 mapping된 값 (예: static=1, moving=2)
     """
-
-    def __init__(self, proj_H, proj_W, max_range=50.0, min_range=2.0):
-        self.proj_H = proj_H
-        self.proj_W = proj_W
-        self.max_range = max_range
-        self.min_range = min_range
-
-    def process(self, scan_path, label_path):
-        homo_points, remissions = load_scan_with_remission(scan_path)
-        sem_label, _ = load_label(label_path)
-        (
-            self.bev_range,
-            self.bev_xyz,
-            self.bev_remission,
-            self.bev_proj_x,
-            self.bev_proj_y,
-            self.bev_unproj_range,
-            self.bev_proj_idx,
-        ) = bev_projection_full(
-            homo_points,
-            remissions,
-            proj_H=self.proj_H,
-            proj_W=self.proj_W,
-            max_range=self.max_range,
-            min_range=self.min_range,
-        )
-        # LaserScan 방식 label 채우기: proj_idx를 이용
-        self.bev_sem_label = np.full((self.proj_H, self.proj_W), -1, dtype=np.int32)
-        valid = self.bev_proj_idx >= 0
-        self.bev_sem_label[valid] = sem_label[self.bev_proj_idx[valid]]
-        return (
-            self.bev_range,
-            self.bev_xyz,
-            self.bev_remission,
-            self.bev_proj_x,
-            self.bev_proj_y,
-            self.bev_unproj_range,
-            self.bev_sem_label,
-        )
+    mapped = np.full_like(bev_label, -1, dtype=np.int32)
+    unique = np.unique(bev_label)
+    for val in unique:
+        if val in mapping_dict:
+            mapped[bev_label == val] = mapping_dict[val]
+        else:
+            mapped[bev_label == val] = 0
+    ternary = np.where(bev_label == -1, 0, mapped)
+    return ternary
 
 
-def process_one_frame_h5(velodyne_path, label_path, output_path):
+def process_scan_as_bev(velodyne_path, label_path):
     proj_H, proj_W = 768, 768
     max_range = 50.0
     min_range = 2.0
@@ -272,65 +231,58 @@ def process_one_frame_h5(velodyne_path, label_path, output_path):
     tmp_unproj_range = torch.full([150000], -1.0, dtype=torch.float)
     tmp_unproj_range[:unproj_n_points] = torch.from_numpy(bev_unproj_range)
 
-    # h5 파일로 저장
-    with h5py.File(output_path, "w") as f:
-        f.create_dataset("bev_composite", data=bev_composite)
-        f.create_dataset("bev_proj_x", data=tmp_x.cpu().numpy())
-        f.create_dataset("bev_proj_y", data=tmp_y.cpu().numpy())
-        f.create_dataset("bev_unproj_range", data=tmp_unproj_range.cpu().numpy())
-    print(f"Saved: {output_path}")
+    return {
+        "bev_composite": bev_composite,
+        "bev_proj_x": tmp_x.cpu().numpy(),
+        "bev_proj_y": tmp_y.cpu().numpy(),
+        "bev_unproj_range": tmp_unproj_range.cpu().numpy(),
+    }
 
 
-def create_ternary_label(bev_label, mapping_dict):
+class BevScan:
     """
-    bev_label: BEV label 이미지 (2D, -1이면 empty)
-    mapping_dict: 예) moving_learning_map 또는 movable_learning_map
-    반환: 삼진 이미지: 빈 공간은 0, 그 외에는 mapping된 값 (예: static=1, moving=2)
+    BEV Scan 클래스:
+      - velodyne 스캔과 라벨 파일을 받아 BEV 투영을 수행하여,
+        bev_range, bev_xyz, bev_remission, bev_sem_label과 함께
+        bev_proj_x, bev_proj_y, bev_unproj_range, bev_proj_idx도 생성.
     """
-    mapped = np.full_like(bev_label, -1, dtype=np.int32)
-    unique = np.unique(bev_label)
-    for val in unique:
-        if val in mapping_dict:
-            mapped[bev_label == val] = mapping_dict[val]
-        else:
-            mapped[bev_label == val] = 0
-    ternary = np.where(bev_label == -1, 0, mapped)
-    return ternary
 
+    def __init__(self, proj_H, proj_W, max_range=50.0, min_range=2.0):
+        self.proj_H = proj_H
+        self.proj_W = proj_W
+        self.max_range = max_range
+        self.min_range = min_range
 
-# 시퀀스 단위 처리 (h5 저장 버전)
-dataset_sequences_path = "/home/ssd_4tb/minjae/KITTI/dataset/sequences"
-output_root = "/home/ssd_4tb/minjae/KITTI/test_output_h5"
-num_workers = mp.cpu_count()
-
-
-def process_frame(seq_id, frame_file):
-    velodyne_folder = os.path.join(dataset_sequences_path, f"{seq_id:02d}", "velodyne")
-    labels_folder = os.path.join(dataset_sequences_path, f"{seq_id:02d}", "labels")
-    output_folder = os.path.join(output_root, f"{seq_id:02d}")
-    os.makedirs(output_folder, exist_ok=True)
-
-    frame_id = int(frame_file[:6])
-    velodyne_path = os.path.join(velodyne_folder, f"{frame_id:06d}.bin")
-    label_path = os.path.join(labels_folder, f"{frame_id:06d}.label")
-    output_path = os.path.join(output_folder, f"{frame_id:06d}.h5")
-    process_one_frame_h5(velodyne_path, label_path, output_path)
-
-
-def process_one_sequence(seq_id):
-    velodyne_folder = os.path.join(dataset_sequences_path, f"{seq_id:02d}", "velodyne")
-    frame_files = os.listdir(velodyne_folder)
-    with ThreadPoolExecutor(max_workers=num_workers) as executor:
-        list(
-            tqdm(
-                executor.map(lambda frame: process_frame(seq_id, frame), frame_files),
-                total=len(frame_files),
-                desc=f"Processing Seq {seq_id}",
-            )
+    def process(self, scan_path, label_path):
+        homo_points, remissions = load_scan_with_remission(scan_path)
+        sem_label, _ = load_label(label_path)
+        (
+            self.bev_range,
+            self.bev_xyz,
+            self.bev_remission,
+            self.bev_proj_x,
+            self.bev_proj_y,
+            self.bev_unproj_range,
+            self.bev_proj_idx,
+        ) = bev_projection_full(
+            homo_points,
+            remissions,
+            proj_H=self.proj_H,
+            proj_W=self.proj_W,
+            max_range=self.max_range,
+            min_range=self.min_range,
         )
-    print(f"Sequence {seq_id} 완료")
 
-
-if __name__ == "__main__":
-    with mp.Pool(processes=num_workers // 2) as pool:
-        pool.map(process_one_sequence, range(11))
+        # LaserScan 방식 label 채우기: proj_idx를 이용
+        self.bev_sem_label = np.full((self.proj_H, self.proj_W), -1, dtype=np.int32)
+        valid = self.bev_proj_idx >= 0
+        self.bev_sem_label[valid] = sem_label[self.bev_proj_idx[valid]]
+        return (
+            self.bev_range,
+            self.bev_xyz,
+            self.bev_remission,
+            self.bev_proj_x,
+            self.bev_proj_y,
+            self.bev_unproj_range,
+            self.bev_sem_label,
+        )
