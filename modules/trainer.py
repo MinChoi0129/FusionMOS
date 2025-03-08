@@ -36,7 +36,6 @@ from modules.tools import (
 )
 
 from torch import distributed as dist
-from torch.cuda.amp import autocast, GradScaler
 
 
 def unproject(points, preds, proj_x, proj_y):
@@ -115,19 +114,29 @@ class Trainer:
         self.info = {
             "train_update": 0,
             "train_loss": 0,
+            #####################
             "train_range_acc": 0,
             "train_range_iou": 0,
             "train_bev_acc": 0,
             "train_bev_iou": 0,
+            "train_fianl_acc": 0,
+            "train_final_iou": 0,
+            #####################
             "valid_loss": 0,
             "valid_range_acc": 0,
             "valid_range_iou": 0,
             "valid_bev_acc": 0,
             "valid_bev_iou": 0,
+            "val_fianl_acc": 0,
+            "val_final_iou": 0,
+            #####################
             "best_train_range_iou": 0,
             "best_train_bev_iou": 0,
+            "best_train_final_iou": 0,
+            #####################
             "best_val_range_iou": 0,
             "best_val_bev_iou": 0,
+            "best_val_final_iou": 0,
         }
 
         # parser 및 데이터 로더 설정 (원본 parser 코드 사용)
@@ -362,42 +371,60 @@ class Trainer:
         self.init_evaluator()
         for epoch in range(self.epoch, self.ARCH["train"]["max_epochs"]):
             # self.parser.train_sampler.set_epoch(epoch)
-            range_acc, range_iou, bev_acc, bev_iou, loss_total, update_mean = (
-                self.train_epoch(
-                    train_loader=self.parser.get_train_set(),
-                    model=self.model,
-                    all_criterion=(self.criterion, self.movable_criterion),
-                    optimizer=self.optimizer,
-                    epoch=epoch,
-                    all_evaluator=(
-                        self.range_evaluator,
-                        self.range_movable_evaluator,
-                        self.bev_evaluator,
-                        self.bev_movable_evaluator,
-                        self.final_evaluator,
-                    ),
-                    scheduler=self.scheduler,
-                    report=self.ARCH["train"]["report_batch"],
-                )
+            (
+                range_loss,
+                bev_loss,
+                final_loss,
+                range_acc,
+                range_iou,
+                bev_acc,
+                bev_iou,
+                final_acc,
+                final_iou,
+                update_ratio,
+            ) = self.train_epoch(
+                train_loader=self.parser.get_train_set(),
+                model=self.model,
+                all_criterion=(self.criterion, self.movable_criterion),
+                optimizer=self.optimizer,
+                epoch=epoch,
+                all_evaluator=(
+                    self.range_evaluator,
+                    self.range_movable_evaluator,
+                    self.bev_evaluator,
+                    self.bev_movable_evaluator,
+                    self.final_evaluator,
+                ),
+                scheduler=self.scheduler,
+                report=self.ARCH["train"]["report_batch"],
             )
             if self.local_rank == 0:
                 self.update_training_info(
                     epoch,
+                    range_loss,
+                    bev_loss,
+                    final_loss,
                     range_acc,
                     range_iou,
                     bev_acc,
                     bev_iou,
-                    loss_total,
-                    update_mean,
+                    final_acc,
+                    final_iou,
+                    update_ratio,
                 )
             if epoch % self.ARCH["train"]["report_epoch"] == 0 and self.local_rank == 0:
                 (
-                    range_acc_val,
-                    range_iou_val,
-                    bev_acc_val,
-                    bev_iou_val,
-                    loss_val,
-                    rand_img,
+                    range_loss,
+                    bev_loss,
+                    final_loss,
+                    range_acc,
+                    range_iou,
+                    bev_acc,
+                    bev_iou,
+                    final_acc,
+                    final_iou,
+                    hetero_l,
+                    rand_imgs,
                 ) = self.validate(
                     val_loader=self.parser.get_valid_set(),
                     model=self.model,
@@ -415,11 +442,15 @@ class Trainer:
                 )
                 self.update_validation_info(
                     epoch,
-                    range_acc_val,
-                    range_iou_val,
-                    bev_acc_val,
-                    bev_iou_val,
-                    loss_val,
+                    range_loss,
+                    bev_loss,
+                    final_loss,
+                    range_acc,
+                    range_iou,
+                    bev_acc,
+                    bev_iou,
+                    final_acc,
+                    final_iou,
                 )
             if self.local_rank == 0:
                 Trainer.save_to_tensorboard(
@@ -430,9 +461,8 @@ class Trainer:
                     w_summary=self.ARCH["train"]["save_summary"],
                     model=self.model_single,
                     img_summary=self.ARCH["train"]["save_scans"],
-                    imgs=rand_img,
                 )
-            # dist.barrier()
+            # # dist.barrier()
         print("Finished Training")
         return
 
@@ -471,24 +501,7 @@ class Trainer:
         model.train()
         end = time.time()
 
-        scaler = torch.cuda.amp.GradScaler()
         for i, (
-            # (
-            #     points,
-            #     (GTs_moving, GTs_movable),
-            # ),  # (B, n_points, 3), (B, n_points) 원본 점 및 원본 라벨
-            # (proj_full, bev_full),  # range: (B, 13, H, W), bev: (B, 13, H_bev, W_bev)
-            # (proj_labels, proj_movable_labels),  # range: (B, H, W), (B, H, W)
-            # (
-            #     bev_labels,
-            #     bev_movable_labels,
-            # ),  # bev: (B, H_bev, W_bev), (B, H_bev, W_bev)
-            # (path_seq, path_name, unproj_n_points),  # e.g., '08', '000123.npy', 122319
-            # (proj_x, proj_y),  # (B, 150000), (B, 150000)
-            # (bev_proj_x, bev_proj_y),  # (B, 150000), (B, 150000)
-            # (proj_xyz, bev_xyz),  # (B, H, W, 3), (B, H_bev, W_bev, 3)
-            # (proj_range, bev_range),  # (B, H, W), (B, H_bev, W_bev)
-            # (unproj_range, bev_unproj_range),  # (B, 150000), (B, 150000)
             (points, (GTs_moving, GTs_movable)),
             (proj_full, bev_full),
             (proj_labels, proj_movable_labels),
@@ -509,12 +522,6 @@ class Trainer:
                 proj_y = proj_y.cuda(non_blocking=True)
                 bev_proj_x = bev_proj_x.cuda(non_blocking=True)
                 bev_proj_y = bev_proj_y.cuda(non_blocking=True)
-                # proj_xyz = proj_xyz.cuda(non_blocking=True)
-                # bev_xyz = bev_xyz.cuda(non_blocking=True)
-                # proj_range = proj_range.cuda(non_blocking=True)
-                # bev_range = bev_range.cuda(non_blocking=True)
-                # unproj_range = unproj_range.cuda(non_blocking=True)
-                # bev_unproj_range = bev_unproj_range.cuda(non_blocking=True)
                 GTs_moving = GTs_moving.cuda(non_blocking=True)
                 GTs_movable = GTs_movable.cuda(non_blocking=True)
 
@@ -576,15 +583,9 @@ class Trainer:
             bev_losses = b_moving_losses + b_movable_losses
             loss_m = range_losses + bev_losses + final_losses
 
-            # optimizer.zero_grad()
-            # loss_m.backward()
-            # optimizer.step()
             optimizer.zero_grad()
-            loss = loss_m.mean()  # 평균 손실 계산
-            # 자동 혼합 정밀도 컨텍스트 없이, 스케일러를 이용해 역전파 수행
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+            loss_m.backward()
+            optimizer.step()
 
             with torch.no_grad():
                 range_evaluator.reset()
@@ -632,21 +633,10 @@ class Trainer:
             final_acc_meter.update(final_acc, points.size(0))
             final_iou_meter.update(final_jaccard, points.size(0))
 
-            # 업데이트 비율 계산
-            # update_ratios = []
-            # for g in optimizer.param_groups:
-            #     lr = g["lr"]
-            #     for param in g["params"]:
-            #         if param.grad is not None:
-            #             w = np.linalg.norm(param.data.cpu().numpy().reshape(-1))
-            #             update = np.linalg.norm(
-            #                 (-max(lr, 1e-10) * param.grad.cpu().numpy().reshape(-1))
-            #             )
-            #             update_ratios.append(update / max(w, 1e-10))
-            # update_ratios = np.array(update_ratios)
-            # update_mean = update_ratios.mean()
-            # update_ratio_meter.update(update_mean)
-            # 개선된 업데이트 비율 계산 (GPU 내장 함수 사용)
+            # measure elapsed time
+            self.batch_time_t.update(time.time() - end)
+            end = time.time()
+
             ratios = []
             for group in optimizer.param_groups:
                 lr = group["lr"]
@@ -664,7 +654,7 @@ class Trainer:
             update_ratio_meter.update(update_mean)
 
             # 일정 배치마다 로그 출력
-            if i % report == 0:
+            if i % report == 0 and self.local_rank == 0:
                 remaining_time = self.calculate_estimate(epoch, i)
                 log_str = (
                     f"Epoch: [{epoch}][{i}/{len(train_loader)}] | "
@@ -686,11 +676,18 @@ class Trainer:
             # 스케줄러 업데이트 (배치마다 step 호출)
             scheduler.step()
 
-            # 배치 처리 시간 갱신 추가
-            batch_time = time.time() - end
-            # print("batch time:", batch_time)
-            self.batch_time_t.update(batch_time)
-            end = time.time()
+        return (
+            range_loss_meter.avg,
+            bev_loss_meter.avg,
+            final_loss_meter.avg,
+            range_acc_meter.avg,
+            range_iou_meter.avg,
+            bev_acc_meter.avg,
+            bev_iou_meter.avg,
+            final_acc_meter.avg,
+            final_iou_meter.avg,
+            update_ratio_meter.avg,
+        )
 
     def validate(
         self,
@@ -736,29 +733,6 @@ class Trainer:
         with torch.no_grad():
             end = time.time()
             for i, (
-                # (
-                #     points,
-                #     (GTs_moving, GTs_movable),
-                # ),  # (B, n_points, 3), (B, n_points) 원본 점 및 원본 라벨
-                # (
-                #     proj_full,
-                #     bev_full,
-                # ),  # range: (B, 13, H, W), bev: (B, 13, H_bev, W_bev)
-                # (proj_labels, proj_movable_labels),  # range: (B, H, W), (B, H, W)
-                # (
-                #     bev_labels,
-                #     bev_movable_labels,
-                # ),  # bev: (B, H_bev, W_bev), (B, H_bev, W_bev)
-                # (
-                #     path_seq,
-                #     path_name,
-                #     unproj_n_points,
-                # ),  # e.g., '08', '000123.npy', 122319
-                # (proj_x, proj_y),  # (B, 150000), (B, 150000)
-                # (bev_proj_x, bev_proj_y),  # (B, 150000), (B, 150000)
-                # (proj_xyz, bev_xyz),  # (B, H, W, 3), (B, H_bev, W_bev, 3)
-                # (proj_range, bev_range),  # (B, H, W), (B, H_bev, W_bev)
-                # (unproj_range, bev_unproj_range),  # (B, 150000), (B, 150000)
                 (points, (GTs_moving, GTs_movable)),
                 (proj_full, bev_full),
                 (proj_labels, proj_movable_labels),
@@ -784,12 +758,6 @@ class Trainer:
                     proj_y = proj_y.cuda(non_blocking=True)
                     bev_proj_x = bev_proj_x.cuda(non_blocking=True)
                     bev_proj_y = bev_proj_y.cuda(non_blocking=True)
-                    # proj_xyz = proj_xyz.cuda(non_blocking=True)
-                    # bev_xyz = bev_xyz.cuda(non_blocking=True)
-                    # proj_range = proj_range.cuda(non_blocking=True)
-                    # bev_range = bev_range.cuda(non_blocking=True)
-                    # unproj_range = unproj_range.cuda(non_blocking=True)
-                    # bev_unproj_range = bev_unproj_range.cuda(non_blocking=True)
                     GTs_moving = GTs_moving.cuda(non_blocking=True)
                     GTs_movable = GTs_movable.cuda(non_blocking=True)
 
@@ -928,22 +896,56 @@ class Trainer:
             save_to_txtlog(self.logdir, "log.txt", final_log)
 
         return (
+            range_loss_meter.avg,
+            bev_loss_meter.avg,
+            final_loss_meter.avg,
+            range_acc_meter.avg,
+            range_iou_meter.avg,
+            bev_acc_meter.avg,
+            bev_iou_meter.avg,
             final_acc_meter.avg,
             final_iou_meter.avg,
-            final_loss_meter.avg,
-            rand_imgs,
             hetero_l.avg,
+            rand_imgs,
         )
 
-    def update_training_info(self, epoch, acc, iou, loss, update_mean, hetero_l):
-        # 학습 정보 업데이트
-        self.info["train_update"] = update_mean
-        self.info["train_loss"] = loss
-        self.info["train_acc"] = acc
-        self.info["train_iou"] = iou
-        self.info["train_hetero"] = hetero_l
+    def update_training_info(
+        self,
+        epoch,
+        range_loss,
+        bev_loss,
+        final_loss,
+        range_acc,
+        range_iou,
+        bev_acc,
+        bev_iou,
+        final_acc,
+        final_iou,
+        update_ratio,
+    ):
+        """
+        학습 과정에서 range/BEV/final 각각의 loss/acc/IoU를 받아 self.info에 기록하고,
+        best 기록을 갱신하며 체크포인트를 저장합니다.
+        """
+        # 1) self.info에 현재 학습 스텝 정보 기록
+        self.info["train_update"] = update_ratio
 
-        # 체크포인트 저장 (현재 상태)
+        # 2) 개별 loss와 전체 loss 기록 (필요하다면 total_loss로 묶어서 기록 가능)
+        total_loss = range_loss + bev_loss + final_loss
+        self.info["train_range_loss"] = range_loss
+        self.info["train_bev_loss"] = bev_loss
+        self.info["train_final_loss"] = final_loss
+        self.info["train_loss"] = total_loss  # 기존 "train_loss" 키 사용
+
+        # 3) Accuracy, IoU 기록
+        self.info["train_range_acc"] = range_acc
+        self.info["train_range_iou"] = range_iou
+        self.info["train_bev_acc"] = bev_acc
+        self.info["train_bev_iou"] = bev_iou
+        self.info["train_final_acc"] = final_acc
+        self.info["train_final_iou"] = final_iou
+
+        # 4) 현재 상태로 체크포인트 저장
         state = {
             "epoch": epoch,
             "state_dict": self.model.state_dict(),
@@ -953,42 +955,79 @@ class Trainer:
         }
         save_checkpoint(state, self.logdir, suffix="")
 
-        # 현재 train_iou가 최고치일 경우 모델 저장
-        if self.info["train_iou"] > self.info.get("best_train_iou", 0):
-            print("현재까지 학습 세트에서 최고 mean IoU 달성, 모델 저장합니다!")
-            self.info["best_train_iou"] = self.info["train_iou"]
-            state = {
-                "epoch": epoch,
-                "state_dict": self.model.state_dict(),
-                "optimizer": self.optimizer.state_dict(),
-                "info": self.info,
-                "scheduler": self.scheduler.state_dict(),
-            }
-            save_checkpoint(state, self.logdir, suffix="_train_best")
+        # 5) best 기록 갱신 (range/BEV/final 각각)
+        #    - 필요 없다면 생략 가능
+        if range_iou > self.info["best_train_range_iou"]:
+            print("Range branch: 최고 train IoU 갱신!")
+            self.info["best_train_range_iou"] = range_iou
+            save_checkpoint(state, self.logdir, suffix="_train_range_best")
 
-    def update_validation_info(self, epoch, acc, iou, loss, hetero_l):
-        # 검증 정보 업데이트
-        self.info["valid_loss"] = loss
-        self.info["valid_acc"] = acc
-        self.info["valid_iou"] = iou
-        self.info["valid_heteros"] = hetero_l
+        if bev_iou > self.info["best_train_bev_iou"]:
+            print("BEV branch: 최고 train IoU 갱신!")
+            self.info["best_train_bev_iou"] = bev_iou
+            save_checkpoint(state, self.logdir, suffix="_train_bev_best")
 
-        # 현재 valid_iou가 최고치일 경우 모델 저장
-        if self.info["valid_iou"] > self.info.get("best_val_iou", 0):
-            log_str = (
-                "현재까지 검증 세트에서 최고 mean IoU 달성, 모델 저장합니다!\n"
-                + "*" * 80
-            )
-            print(log_str)
-            save_to_txtlog(self.logdir, "log.txt", log_str)
-            self.info["best_val_iou"] = self.info["valid_iou"]
+        if final_iou > self.info["best_train_final_iou"]:
+            print("Final branch: 최고 train IoU 갱신!")
+            self.info["best_train_final_iou"] = final_iou
+            save_checkpoint(state, self.logdir, suffix="_train_final_best")
 
-            state = {
-                "epoch": epoch,
-                "state_dict": self.model.state_dict(),
-                "optimizer": self.optimizer.state_dict(),
-                "info": self.info,
-                "scheduler": self.scheduler.state_dict(),
-            }
-            save_checkpoint(state, self.logdir, suffix="_valid_best")
-            save_checkpoint(state, self.logdir, suffix=f"_valid_best_{epoch}")
+    def update_validation_info(
+        self,
+        epoch,
+        range_loss,
+        bev_loss,
+        final_loss,
+        range_acc,
+        range_iou,
+        bev_acc,
+        bev_iou,
+        final_acc,
+        final_iou,
+    ):
+        """
+        검증 과정에서 range/BEV/final 각각의 loss/acc/IoU를 받아 self.info에 기록하고,
+        best 기록을 갱신하며 체크포인트를 저장합니다.
+        """
+        # 1) 개별 loss와 전체 loss
+        total_loss = range_loss + bev_loss + final_loss
+        self.info["valid_range_loss"] = range_loss
+        self.info["valid_bev_loss"] = bev_loss
+        self.info["valid_final_loss"] = final_loss
+        self.info["valid_loss"] = total_loss  # 기존 "valid_loss" 키 사용
+
+        # 2) Accuracy, IoU 기록
+        self.info["valid_range_acc"] = range_acc
+        self.info["valid_range_iou"] = range_iou
+        self.info["valid_bev_acc"] = bev_acc
+        self.info["valid_bev_iou"] = bev_iou
+        self.info["val_final_acc"] = (
+            final_acc  # 기존 dict에 "val_fianl_acc" 타이포 주의
+        )
+        self.info["val_final_iou"] = final_iou  # 동일하게 "val_final_iou" 키 사용
+
+        # 3) 체크포인트 저장
+        state = {
+            "epoch": epoch,
+            "state_dict": self.model.state_dict(),
+            "optimizer": self.optimizer.state_dict(),
+            "info": self.info,
+            "scheduler": self.scheduler.state_dict(),
+        }
+        save_checkpoint(state, self.logdir, suffix="_valid_current")
+
+        # 4) best 기록 갱신
+        if range_iou > self.info["best_val_range_iou"]:
+            print("Range branch: 최고 valid IoU 갱신!")
+            self.info["best_val_range_iou"] = range_iou
+            save_checkpoint(state, self.logdir, suffix="_valid_range_best")
+
+        if bev_iou > self.info["best_val_bev_iou"]:
+            print("BEV branch: 최고 valid IoU 갱신!")
+            self.info["best_val_bev_iou"] = bev_iou
+            save_checkpoint(state, self.logdir, suffix="_valid_bev_best")
+
+        if final_iou > self.info["best_val_final_iou"]:
+            print("Final branch: 최고 valid IoU 갱신!")
+            self.info["best_val_final_iou"] = final_iou
+            save_checkpoint(state, self.logdir, suffix="_valid_final_best")

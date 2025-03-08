@@ -7,7 +7,7 @@ LogPath=./log/Train
 
 # 환경 변수 설정
 export SETUPTOOLS_USE_DISTUTILS=stdlib
-# export OMP_NUM_THREADS=1
+export OMP_NUM_THREADS=1
 export CUDA_VISIBLE_DEVICES="0"  # 단일 GPU 설정
 
 # 단일 GPU 학습 실행

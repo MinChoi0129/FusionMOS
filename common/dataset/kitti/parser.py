@@ -650,8 +650,8 @@ class SemanticKitti(Dataset):
         ) = self.get_multiple_data_from_scan("BEV", [int(seq), int(current_index)])
 
         # residual 파일들을 torch.Tensor로 로드 (리스트 컴프리헨션 사용)
-        proj_residuals = [torch.Tensor(np.load(f)) for f in residual_files]
-        bev_residuals = [torch.Tensor(np.load(f)) for f in bev_residual_files]
+        proj_residuals = [torch.Tensor(np.load(f).copy()) for f in residual_files]
+        bev_residuals = [torch.Tensor(np.load(f).copy()) for f in bev_residual_files]
 
         # Range 데이터 구성: proj_range, proj_xyz, proj_remission을 연결
         proj = torch.cat(
@@ -662,6 +662,7 @@ class SemanticKitti(Dataset):
             ],
             dim=0,
         )
+
         proj = (proj - self.sensor_img_means[:, None, None]) / self.sensor_img_stds[
             :, None, None
         ]
@@ -699,7 +700,10 @@ class SemanticKitti(Dataset):
         #     (unproj_range, bev_unproj_range),
         # )
         end_time = time.time()
-        # print(f"Dataset getitem time: {end_time - start_time} sec")
+        # print(
+        #     f"Dataset getitem time: [{dataset_index} / {seq} / {start_index}] {end_time - start_time} sec"
+        # )
+
         return (
             (points, (GTs_moving, GTs_movable)),
             (proj_full, bev_full),
