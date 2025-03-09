@@ -61,7 +61,8 @@ def my_collate(batch):
     to_augment_unique = torch.unique(to_augment_unique)
 
     for k in to_augment_unique:
-        data = torch.cat((data, torch.flip(data[k.item()], [2]).unsqueeze(0)), dim=0)
+        data = torch.cat(
+            (data, torch.flip(data[k.item()], [2]).unsqueeze(0)), dim=0)
         proj_labels = torch.cat(
             (proj_labels, torch.flip(proj_labels[k.item()], [1]).unsqueeze(0)), dim=0
         )
@@ -106,8 +107,10 @@ class SemanticKitti(Dataset):
         self.sensor = sensor
         self.sensor_img_H = sensor["img_prop"]["height"]
         self.sensor_img_W = sensor["img_prop"]["width"]
-        self.sensor_img_means = torch.tensor(sensor["img_means"], dtype=torch.float)
-        self.sensor_img_stds = torch.tensor(sensor["img_stds"], dtype=torch.float)
+        self.sensor_img_means = torch.tensor(
+            sensor["img_means"], dtype=torch.float)
+        self.sensor_img_stds = torch.tensor(
+            sensor["img_stds"], dtype=torch.float)
         self.sensor_fov_up = sensor["fov_up"]
         self.sensor_fov_down = sensor["fov_down"]
         self.valid_residual_delta_t = valid_residual_delta_t
@@ -242,7 +245,8 @@ class SemanticKitti(Dataset):
             # convert kitti poses from camera coord to LiDAR coord
             new_poses = []
             for pose in poses:
-                new_poses.append(T_velo_cam.dot(inv_frame0).dot(pose).dot(T_cam_velo))
+                new_poses.append(T_velo_cam.dot(
+                    inv_frame0).dot(pose).dot(T_cam_velo))
             self.poses[seq] = np.array(new_poses)
 
             # check all scans have labels
@@ -293,7 +297,8 @@ class SemanticKitti(Dataset):
                     )
         # print("\033[32m No model directory found.\033[0m")
 
-        print(f"\033[32m There are {self.dataset_size} frames in total. \033[0m")
+        print(
+            f"\033[32m There are {self.dataset_size} frames in total. \033[0m")
         if drop_few_static_frames:
             self.remove_few_static_frames()
             print(
@@ -337,7 +342,8 @@ class SemanticKitti(Dataset):
             tmp_sem_label = scan.sem_label.copy()
             scan.sem_label = self.map(scan.sem_label, self.learning_map)
             scan.proj_sem_movable_label = scan.proj_sem_label.copy()
-            scan.proj_sem_label = self.map(scan.proj_sem_label, self.learning_map)
+            scan.proj_sem_label = self.map(
+                scan.proj_sem_label, self.learning_map)
 
             scan.proj_sem_movable_label = self.map(
                 scan.proj_sem_movable_label, self.movable_learning_map
@@ -357,7 +363,8 @@ class SemanticKitti(Dataset):
             proj_mask = torch.from_numpy(scan.proj_mask)
             proj_labels = torch.from_numpy(scan.proj_sem_label).clone()
             proj_labels = proj_labels * proj_mask
-            proj_movable_labels = torch.from_numpy(scan.proj_sem_movable_label).clone()
+            proj_movable_labels = torch.from_numpy(
+                scan.proj_sem_movable_label).clone()
             proj_movable_labels = proj_movable_labels * proj_mask
             proj_x = torch.full([self.max_points], -1, dtype=torch.long)
             proj_x[:unproj_n_points] = torch.from_numpy(scan.proj_x)
@@ -386,12 +393,14 @@ class SemanticKitti(Dataset):
             seq, frame_id = config
 
             dataset_sequences_path = "/home/ssd_4tb/minjae/KITTI/dataset/sequences"
-            labels_folder = os.path.join(dataset_sequences_path, f"{seq:02d}", "labels")
+            labels_folder = os.path.join(
+                dataset_sequences_path, f"{seq:02d}", "labels")
             velodyne_folder = os.path.join(
                 dataset_sequences_path, f"{seq:02d}", "velodyne"
             )
 
-            velodyne_path = os.path.join(velodyne_folder, f"{frame_id:06d}.bin")
+            velodyne_path = os.path.join(
+                velodyne_folder, f"{frame_id:06d}.bin")
             label_path = os.path.join(labels_folder, f"{frame_id:06d}.label")
 
             bev_data = process_scan_as_bev(velodyne_path, label_path)
@@ -650,8 +659,10 @@ class SemanticKitti(Dataset):
         ) = self.get_multiple_data_from_scan("BEV", [int(seq), int(current_index)])
 
         # residual 파일들을 torch.Tensor로 로드 (리스트 컴프리헨션 사용)
-        proj_residuals = [torch.Tensor(np.load(f).copy()) for f in residual_files]
-        bev_residuals = [torch.Tensor(np.load(f).copy()) for f in bev_residual_files]
+        proj_residuals = [torch.Tensor(np.load(f).copy())
+                          for f in residual_files]
+        bev_residuals = [torch.Tensor(np.load(f).copy())
+                         for f in bev_residual_files]
 
         # Range 데이터 구성: proj_range, proj_xyz, proj_remission을 연결
         proj = torch.cat(
@@ -703,6 +714,24 @@ class SemanticKitti(Dataset):
         # print(
         #     f"Dataset getitem time: [{dataset_index} / {seq} / {start_index}] {end_time - start_time} sec"
         # )
+
+        def do_assertion(npy_data):
+            has_nan = np.isnan(npy_data).any().item()
+            has_inf = np.isinf(npy_data).any().item()
+            if has_nan:
+                print("🚫NaN detected in input data!")
+            if has_inf:
+                print("🚫Inf detected in input data!")
+            if has_nan or has_inf:
+                raise ValueError("Input data contains NaN or Inf!")
+
+        for i, data in enumerate([points, proj_full, bev_full, proj_labels, proj_movable_labels, bev_labels, bev_movable_labels, proj_x, proj_y, bev_proj_x, bev_proj_y, GTs_moving, GTs_movable]):
+            try:
+                do_assertion(data)
+            except ValueError as e:
+                print(f"{i}번째 데이터 assertion 실패")
+                print(f"Error occurred while asserting input data: {e}")
+                raise ValueError("Stop Training")
 
         return (
             (points, (GTs_moving, GTs_movable)),
@@ -799,7 +828,8 @@ class SemanticKitti(Dataset):
                 self.label_files[seq] = useful_label_paths
 
                 # poses 필터링
-                self.poses[seq] = self.poses[seq][list(map(int, pending_dict[seq]))]
+                self.poses[seq] = self.poses[seq][list(
+                    map(int, pending_dict[seq]))]
 
                 assert len(useful_scan_paths) == len(useful_label_paths)
                 assert len(useful_scan_paths) == self.poses[seq].shape[0]
@@ -815,15 +845,18 @@ class SemanticKitti(Dataset):
                 if self.use_residual:
                     for i in self.all_residaul_id:
                         # range residual 파일 필터링
-                        tmp_residuals = eval(f"self.residual_files_{i+1}['{seq}']")
+                        tmp_residuals = eval(
+                            f"self.residual_files_{i+1}['{seq}']")
                         tmp_pending_list = eval(f"pending_dict['{seq}']")
                         tmp_usefuls = [
                             path
                             for path in tmp_residuals
                             if os.path.split(path)[-1][:-4] in tmp_pending_list
                         ]
-                        exec(f"self.residual_files_{i+1}['{seq}'] = tmp_usefuls")
-                        new_len = len(eval(f"self.residual_files_{i+1}['{seq}']"))
+                        exec(
+                            f"self.residual_files_{i+1}['{seq}'] = tmp_usefuls")
+                        new_len = len(
+                            eval(f"self.residual_files_{i+1}['{seq}']"))
                         print(
                             f"  Drop residual_images_{i+1} in seq{seq}: {len(tmp_residuals)} -> {new_len}"
                         )
@@ -847,7 +880,8 @@ class SemanticKitti(Dataset):
                             f"  Drop bev_residual_images_{i+1} in seq{seq}: {len(tmp_bev_residuals)} -> {new_len_bev}"
                         )
                 new_len = len(self.scan_files[seq])
-                print(f"Seq {seq} drop {raw_len - new_len}: {raw_len} -> {new_len}")
+                print(
+                    f"Seq {seq} drop {raw_len - new_len}: {raw_len} -> {new_len}")
                 self.total_remove += raw_len - new_len
 
 

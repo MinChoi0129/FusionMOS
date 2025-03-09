@@ -22,6 +22,7 @@ import __init__ as booger
 
 import torch.optim as optim
 from tensorboardX import SummaryWriter as Logger
+from common.dataset.kitti.parser import SemanticKitti
 from common.sync_batchnorm.batchnorm import convert_model
 from common.warmupLR import warmupLR
 
@@ -38,56 +39,16 @@ from modules.tools import (
 from torch import distributed as dist
 
 
-def unproject(points, preds, proj_x, proj_y):
-    device = preds.device
-    batch_indices_list = []
-    xs_list = []
-    ys_list = []
-
-    # 각 배치의 유효 점들을 리스트로 모읍니다.
-    for b in range(len(points)):
-        n_points = points[b].size(0)
-        batch_indices_list.append(
-            torch.full((n_points,), b, dtype=torch.long, device=device)
-        )
-        xs_list.append(proj_x[b][:n_points])
-        ys_list.append(proj_y[b][:n_points])
-
-    # 배치 인덱스, x, y 좌표를 모두 concatenate하여 1차원 텐서로 만듭니다.
-    batch_indices = torch.cat(batch_indices_list, dim=0)  # (total_points,)
-    xs = torch.cat(xs_list, dim=0)  # (total_points,)
-    ys = torch.cat(ys_list, dim=0)  # (total_points,)
-
-    # 유효하지 않은 좌표(-1) 마스크 생성
-    valid_mask = (xs != -1) & (ys != -1)
-    # 유효 좌표는 clamp하여 유효 범위 내로 제한합니다.
-    xs_clamped = xs.clamp(0, preds.size(3) - 1)
-    ys_clamped = ys.clamp(0, preds.size(2) - 1)
-
-    # advanced indexing으로 각 배치의 해당 좌표 픽셀 값을 추출합니다.
-    # preds의 shape: (B, C, H, W) → 결과 gathered: (total_points, C)
-    gathered = preds[batch_indices, :, ys_clamped, xs_clamped]
-
-    # 유효하지 않은 좌표는 0으로 처리합니다.
-    gathered[~valid_mask] = 0
-
-    # 최종 shape: (1, C, total_points)
-    return gathered.T.unsqueeze(0)
-
-
-def loss_and_to_labels(probs, log_probs, labels, each_criterion, ls_func):
-    """배치 전체에 대해서 평균 loss가 나옴"""
-
+def loss_and_pred(probs, log_probs, labels, each_criterion, ls_func):
     if probs.numel() == 0:
         raise ValueError("No unprojected predictions found")
 
     jacc = ls_func(probs, labels)
     wce = each_criterion(log_probs.double(), labels).float()
     loss = wce + jacc
-    # print("jacc, wce, loss:", jacc.item(), wce.item(), loss.item())
 
-    argmax = probs.argmax(dim=1)
-    return loss, argmax
+    pred = probs.argmax(dim=0)  # (n, )
+    return loss, pred, (jacc, wce)
 
 
 class Trainer:
@@ -214,7 +175,8 @@ class Trainer:
         """
         손실함수 정의 (필요 시 Lovasz Softmax 사용)
         """
-        self.criterion = nn.NLLLoss(ignore_index=0, weight=self.loss_w.double()).cuda()
+        self.criterion = nn.NLLLoss(
+            ignore_index=0, weight=self.loss_w.double()).cuda()
         self.movable_criterion = nn.NLLLoss(
             ignore_index=0, weight=self.movable_loss_w.double()
         ).cuda()
@@ -233,7 +195,8 @@ class Trainer:
         self.multi_gpu = False
         self.n_gpus = 0
         self.model_single = self.model
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(
+            "cuda" if torch.cuda.is_available() else "cpu")
         print("Training on device: ", self.device)
 
         if torch.cuda.is_available() and torch.cuda.device_count() > 0:
@@ -290,7 +253,8 @@ class Trainer:
             self.model.load_state_dict(w_dict["state_dict"], strict=True)
         else:
             self.model.load_state_dict(
-                {k.replace("module.", ""): v for k, v in w_dict["state_dict"].items()}
+                {k.replace("module.", ""): v for k,
+                 v in w_dict["state_dict"].items()}
             )
         self.optimizer.load_state_dict(w_dict["optimizer"])
         self.epoch = w_dict["epoch"] + 1
@@ -352,7 +316,8 @@ class Trainer:
             self.parser.get_n_classes(), self.local_rank, self.ignore_class
         )
         self.range_movable_evaluator = iouEval(
-            self.parser.get_n_classes(movable=True), self.local_rank, self.ignore_class
+            self.parser.get_n_classes(
+                movable=True), self.local_rank, self.ignore_class
         )
 
         # BEV evaluator (범위에 상관없이 별도로 구성)
@@ -360,7 +325,8 @@ class Trainer:
             self.parser.get_n_classes(), self.local_rank, self.ignore_class
         )
         self.bev_movable_evaluator = iouEval(
-            self.parser.get_n_classes(movable=True), self.local_rank, self.ignore_class
+            self.parser.get_n_classes(
+                movable=True), self.local_rank, self.ignore_class
         )
 
         self.final_evaluator = iouEval(
@@ -372,9 +338,7 @@ class Trainer:
         for epoch in range(self.epoch, self.ARCH["train"]["max_epochs"]):
             # self.parser.train_sampler.set_epoch(epoch)
             (
-                range_loss,
-                bev_loss,
-                final_loss,
+                overall_loss,
                 range_acc,
                 range_iou,
                 bev_acc,
@@ -382,6 +346,7 @@ class Trainer:
                 final_acc,
                 final_iou,
                 update_ratio,
+                hetero_l,
             ) = self.train_epoch(
                 train_loader=self.parser.get_train_set(),
                 model=self.model,
@@ -401,9 +366,7 @@ class Trainer:
             if self.local_rank == 0:
                 self.update_training_info(
                     epoch,
-                    range_loss,
-                    bev_loss,
-                    final_loss,
+                    overall_loss,
                     range_acc,
                     range_iou,
                     bev_acc,
@@ -411,20 +374,19 @@ class Trainer:
                     final_acc,
                     final_iou,
                     update_ratio,
+                    hetero_l,
                 )
             if epoch % self.ARCH["train"]["report_epoch"] == 0 and self.local_rank == 0:
                 (
-                    range_loss,
-                    bev_loss,
-                    final_loss,
+                    overall_loss,
                     range_acc,
                     range_iou,
                     bev_acc,
                     bev_iou,
                     final_acc,
                     final_iou,
-                    hetero_l,
                     rand_imgs,
+                    hetero_l,
                 ) = self.validate(
                     val_loader=self.parser.get_valid_set(),
                     model=self.model,
@@ -442,15 +404,14 @@ class Trainer:
                 )
                 self.update_validation_info(
                     epoch,
-                    range_loss,
-                    bev_loss,
-                    final_loss,
+                    overall_loss,
                     range_acc,
                     range_iou,
                     bev_acc,
                     bev_iou,
                     final_acc,
                     final_iou,
+                    hetero_l,
                 )
             if self.local_rank == 0:
                 Trainer.save_to_tensorboard(
@@ -477,16 +438,34 @@ class Trainer:
         scheduler,
         report=10,
     ):
-        # AverageMeter 초기화
-        range_loss_meter = AverageMeter()
-        bev_loss_meter = AverageMeter()
-        final_loss_meter = AverageMeter()
-        range_acc_meter = AverageMeter()
-        range_iou_meter = AverageMeter()
-        bev_acc_meter = AverageMeter()
-        bev_iou_meter = AverageMeter()
-        final_acc_meter = AverageMeter()
-        final_iou_meter = AverageMeter()
+        # Range Moving
+        moving_losses = AverageMeter()
+        moving_acc = AverageMeter()
+        moving_iou = AverageMeter()
+
+        # Range Movable
+        movable_losses = AverageMeter()
+        movable_acc = AverageMeter()
+        movable_iou = AverageMeter()
+
+        # BEV Moving
+        bev_moving_losses = AverageMeter()
+        bev_moving_acc = AverageMeter()
+        bev_moving_iou = AverageMeter()
+
+        # BEV Movable
+        bev_movable_losses = AverageMeter()
+        bev_movable_acc = AverageMeter()
+        bev_movable_iou = AverageMeter()
+
+        # Final Moving
+        final_moving_losses = AverageMeter()
+        final_moving_acc = AverageMeter()
+        final_moving_iou = AverageMeter()
+
+        # ETC.
+        losses = AverageMeter()
+        hetero_l = AverageMeter()
         update_ratio_meter = AverageMeter()
 
         (
@@ -515,9 +494,11 @@ class Trainer:
                 proj_full = proj_full.cuda(non_blocking=True)
                 bev_full = bev_full.cuda(non_blocking=True)
                 proj_labels = proj_labels.cuda(non_blocking=True).long()
-                proj_movable_labels = proj_movable_labels.cuda(non_blocking=True).long()
+                proj_movable_labels = proj_movable_labels.cuda(
+                    non_blocking=True).long()
                 bev_labels = bev_labels.cuda(non_blocking=True).long()
-                bev_movable_labels = bev_movable_labels.cuda(non_blocking=True).long()
+                bev_movable_labels = bev_movable_labels.cuda(
+                    non_blocking=True).long()
                 proj_x = proj_x.cuda(non_blocking=True)
                 proj_y = proj_y.cuda(non_blocking=True)
                 bev_proj_x = bev_proj_x.cuda(non_blocking=True)
@@ -525,113 +506,122 @@ class Trainer:
                 GTs_moving = GTs_moving.cuda(non_blocking=True)
                 GTs_movable = GTs_movable.cuda(non_blocking=True)
 
-            r_moving, r_movable, b_moving, b_movable = model(proj_full, bev_full)
+            # softmax 거쳤으므로 0-1 범위.
+            r_moving, r_movable, b_moving, b_movable = model(
+                proj_full, bev_full)
 
-            r_moving_probs = unproject(points, r_moving, proj_x, proj_y)
-            r_movable_probs = unproject(points, r_movable, proj_x, proj_y)
-            b_moving_probs = unproject(points, b_moving, bev_proj_x, bev_proj_y)
-            b_movable_probs = unproject(points, b_movable, bev_proj_x, bev_proj_y)
-            final_probs = (r_moving_probs * b_moving_probs) / 2.0
+            """모든것을 batch 해제"""
+            """이 아래부터는 배치가 1임을 가정하고 배치를 해제합니다."""
+            points = points[0]
+            npoints = points.shape[0]
+            proj_full, bev_full = proj_full[0], bev_full[0]
+            proj_labels, proj_movable_labels = proj_labels[0], proj_movable_labels[0]
+            bev_labels, bev_movable_labels = bev_labels[0], bev_movable_labels[0]
+            proj_x, proj_y = proj_x[0], proj_y[0]
+            bev_proj_x, bev_proj_y = bev_proj_x[0], bev_proj_y[0]
+            GTs_moving, GTs_movable = GTs_moving[0], GTs_movable[0]
+            r_moving, r_movable = r_moving[0], r_movable[0]
+            b_moving, b_movable = b_moving[0], b_movable[0]
 
-            log_r_moving_probs = torch.log(r_moving_probs.clamp(min=1e-8))
-            log_r_movable_probs = torch.log(r_movable_probs.clamp(min=1e-8))
-            log_b_moving_probs = torch.log(b_moving_probs.clamp(min=1e-8))
-            log_b_movable_probs = torch.log(b_movable_probs.clamp(min=1e-8))
-            log_final_probs = torch.log(final_probs.clamp(min=1e-8))
+            # (n, 3)
+            # (1, ) =: n
+            # (13, h, w), (13, h_bev, w_bev)
+            # h, w
+            # h_bev, w_bev
+            # (150000, ), (150000, )
+            # (150000, ), (150000, )
+            # (n, ), (n, )
+            # (3, h, w), (3, h, w)
+            # (3, h_bev, w_bev), (3, h_bev, w_bev)
 
-            r_moving_losses, r_moving_preds = loss_and_to_labels(
-                r_moving_probs,
-                log_r_moving_probs,
-                GTs_moving,
-                criterion,
-                self.ls,
-            )
+            ##############################################
+            proj_x = proj_x[:npoints]  # (n, )
+            proj_y = proj_y[:npoints]  # (n, )
+            bev_proj_x = bev_proj_x[:npoints]  # (n, )
+            bev_proj_y = bev_proj_y[:npoints]  # (n, )
 
-            r_movable_losses, r_movable_preds = loss_and_to_labels(
-                r_movable_probs,
-                log_r_movable_probs,
-                GTs_movable,
-                movable_criterion,
-                self.ls,
-            )
+            # 3차원 공간에서 점별 클래스 확률
+            moving = r_moving[:, proj_y, proj_x]  # (3, n)
+            movable = r_movable[:, proj_y, proj_x]  # (3, n)
+            bev_moving = b_moving[:, bev_proj_y, bev_proj_x]  # (3, n)
+            bev_movable = b_movable[:, bev_proj_y, bev_proj_x]  # (3, n)
+            final_moving = (moving + bev_moving) / 2  # (3, n)
 
-            b_moving_losses, b_moving_preds = loss_and_to_labels(
-                b_moving_probs,
-                log_b_moving_probs,
-                GTs_moving,
-                criterion,
-                self.ls,
-            )
+            ##############################################
 
-            b_movable_losses, b_movable_preds = loss_and_to_labels(
-                b_movable_probs,
-                log_b_movable_probs,
-                GTs_movable,
-                movable_criterion,
-                self.ls,
-            )
+            log_moving = torch.log(moving.clamp(min=1e-8))
+            log_movable = torch.log(movable.clamp(min=1e-8))
+            log_bev_moving = torch.log(bev_moving.clamp(min=1e-8))
+            log_bev_movable = torch.log(bev_movable.clamp(min=1e-8))
+            log_final_moving = torch.log(final_moving.clamp(min=1e-8))
 
-            final_losses, final_preds = loss_and_to_labels(
-                final_probs,
-                log_final_probs,
-                GTs_moving,
-                criterion,
-                self.ls,
-            )
+            l_moving, pred_moving, _ = loss_and_pred(
+                moving, log_moving, GTs_moving, criterion, self.ls)
+            l_movable, pred_movable, _ = loss_and_pred(
+                movable, log_movable, GTs_movable, movable_criterion, self.ls)
+            l_bev_moving, pred_bev_moving, _ = loss_and_pred(
+                bev_moving, log_bev_moving, GTs_moving, criterion, self.ls)
+            l_bev_movable, pred_bev_movable, _ = loss_and_pred(
+                bev_movable, log_bev_movable, GTs_movable, movable_criterion, self.ls)
+            l_final_moving, pred_final_moving, _ = loss_and_pred(
+                final_moving, log_final_moving, GTs_moving, criterion, self.ls)
 
-            range_losses = r_moving_losses + r_movable_losses
-            bev_losses = b_moving_losses + b_movable_losses
-            loss_m = range_losses + bev_losses + final_losses
+            l_range = l_moving + l_movable
+            l_bev = l_bev_moving + l_bev_movable
+            loss = l_range + l_bev + l_final_moving
 
             optimizer.zero_grad()
-            loss_m.backward()
+            loss.backward()
             optimizer.step()
 
+            mean_loss = loss.mean()
             with torch.no_grad():
                 range_evaluator.reset()
-                range_evaluator.addBatch(r_moving_preds, GTs_moving)
+                range_evaluator.addBatch(pred_moving, GTs_moving)
                 range_acc = range_evaluator.getacc()
                 range_jaccard, _ = range_evaluator.getIoU()
 
                 range_movable_evaluator.reset()
-                range_movable_evaluator.addBatch(r_movable_preds, GTs_movable)
+                range_movable_evaluator.addBatch(pred_movable, GTs_movable)
                 range_movable_acc = range_movable_evaluator.getacc()
                 range_movable_jaccard, _ = range_movable_evaluator.getIoU()
 
                 # BEV 평가: b_moving과 b_movable 결과 평가 후 평균 처리
                 bev_evaluator.reset()
-                bev_evaluator.addBatch(b_moving_preds, GTs_moving)
+                bev_evaluator.addBatch(pred_bev_moving, GTs_moving)
                 bev_acc = bev_evaluator.getacc()
                 bev_jaccard, _ = bev_evaluator.getIoU()
 
                 bev_movable_evaluator.reset()
-                bev_movable_evaluator.addBatch(b_movable_preds, GTs_movable)
+                bev_movable_evaluator.addBatch(pred_bev_movable, GTs_movable)
                 bev_movable_acc = bev_movable_evaluator.getacc()
                 bev_movable_jaccard, _ = bev_movable_evaluator.getIoU()
 
                 # Final 평가: final_preds와 GTs_moving 비교
                 final_evaluator.reset()
-                final_evaluator.addBatch(final_preds, GTs_moving)
+                final_evaluator.addBatch(pred_final_moving, GTs_moving)
                 final_acc = final_evaluator.getacc()
                 final_jaccard, _ = final_evaluator.getIoU()
 
-            # 배치별 손실 및 평가 지표 미터 업데이트 (배치 크기: points.size(0))
-            range_loss_meter.update(range_losses.item(), points.size(0))
-            bev_loss_meter.update(bev_losses.item(), points.size(0))
-            final_loss_meter.update(final_losses.item(), points.size(0))
+            losses.update(mean_loss.item())
 
-            # moving과 movable 결과를 평균 내어 평가 (Range와 BEV 각각)
-            avg_range_acc = (range_acc + range_movable_acc) / 2.0
-            avg_range_iou = (range_jaccard + range_movable_jaccard) / 2.0
-            avg_bev_acc = (bev_acc + bev_movable_acc) / 2.0
-            avg_bev_iou = (bev_jaccard + bev_movable_jaccard) / 2.0
+            moving_losses.update(l_moving.mean().item())
+            movable_losses.update(l_movable.mean().item())
+            moving_acc.update(range_acc.item())
+            moving_iou.update(range_jaccard.item())
+            movable_acc.update(range_movable_acc.item())
+            movable_iou.update(range_movable_jaccard.item())
 
-            range_acc_meter.update(avg_range_acc, points.size(0))
-            range_iou_meter.update(avg_range_iou, points.size(0))
-            bev_acc_meter.update(avg_bev_acc, points.size(0))
-            bev_iou_meter.update(avg_bev_iou, points.size(0))
-            final_acc_meter.update(final_acc, points.size(0))
-            final_iou_meter.update(final_jaccard, points.size(0))
+            bev_moving_losses.update(l_bev_moving.mean().item())
+            bev_movable_losses.update(l_bev_movable.mean().item())
+            bev_moving_acc.update(bev_acc.item())
+            bev_moving_iou.update(bev_jaccard.item())
+            bev_movable_acc.update(bev_movable_acc.item())
+            bev_movable_iou.update(bev_movable_jaccard.item())
+
+            final_moving_losses.update(l_final_moving.mean().item())
+            final_moving_acc.update(final_acc.item())
+            final_moving_iou.update(final_jaccard.item())
 
             # measure elapsed time
             self.batch_time_t.update(time.time() - end)
@@ -647,46 +637,92 @@ class Trainer:
                         grad_norm = (lr * param.grad).norm(p=2)
                         ratios.append(grad_norm / (w + 1e-10))
             if ratios:
-                update_mean = torch.stack(ratios).mean().item()
+                ratios = torch.stack(ratios)
+                update_mean = ratios.mean().item()
+                update_std = ratios.std().item()
             else:
                 raise Exception("No gradients found in optimizer parameters.")
-                update_mean = 0.0
             update_ratio_meter.update(update_mean)
 
             # 일정 배치마다 로그 출력
             if i % report == 0 and self.local_rank == 0:
-                remaining_time = self.calculate_estimate(epoch, i)
-                log_str = (
-                    f"Epoch: [{epoch}][{i}/{len(train_loader)}] | "
-                    f"Range Loss: {range_loss_meter.val:.4f} ({range_loss_meter.avg:.4f}) | "
-                    f"BEV Loss: {bev_loss_meter.val:.4f} ({bev_loss_meter.avg:.4f}) | "
-                    f"Final Loss: {final_loss_meter.val:.4f} ({final_loss_meter.avg:.4f}) | "
-                    # f"Range Acc: {range_acc_meter.val:.3f} ({range_acc_meter.avg:.3f}) | "
-                    f"Range IoU: {range_iou_meter.val:.3f} ({range_iou_meter.avg:.3f}) | "
-                    # f"BEV Acc: {bev_acc_meter.val:.3f} ({bev_acc_meter.avg:.3f}) | "
-                    f"BEV IoU: {bev_iou_meter.val:.3f} ({bev_iou_meter.avg:.3f}) | "
-                    # f"Final Acc: {final_acc_meter.val:.3f} ({final_acc_meter.avg:.3f}) | "
-                    f"Final IoU: {final_iou_meter.val:.3f} ({final_iou_meter.avg:.3f}) | "
-                    # f"Update Ratio: {update_mean:.3e} | "
-                    f"[{remaining_time}]"
-                )
-                print(log_str)
-                save_to_txtlog(self.logdir, "log.txt", log_str)
+                str_line = (
+                    "Lr: {lr:.3e} | "
+                    "Update: {umean:.3e} mean,{ustd:.3e} std | "
+                    "Epoch: [{0}][{1}/{2}] | "
+                    "Time {batch_time.val:.3f} ({batch_time.avg:.3f}) | "
+                    "Data {data_time.val:.3f} ({data_time.avg:.3f}) | "
+                    "Overall-Loss {loss.val:.4f} ({loss.avg:.4f}) | "
 
-            # 스케줄러 업데이트 (배치마다 step 호출)
+                    "MovingLoss {moving_losses.val:.4f} ({moving_losses.avg:.4f}) | "
+                    "MovableLoss {movable_losses.val:.4f} ({movable_losses.avg:.4f}) | "
+                    "MovingAcc {moving_acc.val:.3f} ({moving_acc.avg:.3f}) | "
+                    "MovingIoU {moving_iou.val:.3f} ({moving_iou.avg:.3f}) | "
+                    "Movable_acc {movable_acc.val:.3f} ({movable_acc.avg:.3f}) | "
+                    "Movable_IoU {movable_iou.val:.3f} ({movable_iou.avg:.3f}) | "
+
+                    "BEV_MovingLoss {bev_moving_losses.val:.4f} ({bev_moving_losses.avg:.4f}) | "
+                    "BEV_MovableLoss {bev_movable_losses.val:.4f} ({bev_movable_losses.avg:.4f}) | "
+                    "BEV_MovingAcc {bev_moving_acc.val:.3f} ({bev_moving_acc.avg:.3f}) | "
+                    "BEV_MovingIoU {bev_moving_iou.val:.3f} ({bev_moving_iou.avg:.3f}) | "
+                    "BEV_Movable_acc {bev_movable_acc.val:.3f} ({bev_movable_acc.avg:.3f}) | "
+                    "BEV_Movable_IoU {bev_movable_iou.val:.3f} ({bev_movable_iou.avg:.3f}) | "
+
+                    "Final_MovingLoss {final_moving_losses.val:.4f} ({final_moving_losses.avg:.4f}) | "
+                    "Final_MovingAcc {final_moving_acc.val:.3f} ({final_moving_acc.avg:.3f}) | "
+                    "Final_MovingIoU {final_moving_iou.val:.3f} ({final_moving_iou.avg:.3f}) | "
+                    "[{estim}]"
+                ).format(
+                    epoch,
+                    i,
+                    len(train_loader),
+                    #############################
+                    lr=lr,
+                    umean=update_mean,
+                    ustd=update_std,
+                    batch_time=self.batch_time_t,
+                    data_time=self.data_time_t,
+                    loss=losses,
+
+                    moving_losses=moving_losses,
+                    movable_losses=movable_losses,
+                    moving_acc=moving_acc,
+                    moving_iou=moving_iou,
+                    movable_acc=movable_acc,
+                    movable_iou=movable_iou,
+
+                    bev_moving_losses=bev_moving_losses,
+                    bev_movable_losses=bev_movable_losses,
+                    bev_moving_acc=bev_moving_acc,
+                    bev_moving_iou=bev_moving_iou,
+                    bev_movable_acc=bev_movable_acc,
+                    bev_movable_iou=bev_movable_iou,
+
+                    final_moving_losses=final_moving_losses,
+                    final_moving_acc=final_moving_acc,
+                    final_moving_iou=final_moving_iou,
+
+                    estim=self.calculate_estimate(epoch, i),
+                )
+                print(str_line)
+                save_to_txtlog(self.logdir, "log.txt", str_line)
+
             scheduler.step()
 
         return (
-            range_loss_meter.avg,
-            bev_loss_meter.avg,
-            final_loss_meter.avg,
-            range_acc_meter.avg,
-            range_iou_meter.avg,
-            bev_acc_meter.avg,
-            bev_iou_meter.avg,
-            final_acc_meter.avg,
-            final_iou_meter.avg,
+            losses.avg,
+
+            moving_acc.avg,
+            moving_iou.avg,
+
+            bev_moving_acc.avg,
+            bev_moving_iou.avg,
+
+            final_moving_acc.avg,
+            final_moving_iou.avg,
+
             update_ratio_meter.avg,
+            hetero_l.avg,
         )
 
     def validate(
@@ -699,17 +735,40 @@ class Trainer:
         color_fn,
         save_scans=False,
     ):
-        # 평가용 평균 측정기 초기화
-        range_loss_meter = AverageMeter()
-        bev_loss_meter = AverageMeter()
-        final_loss_meter = AverageMeter()
-        range_acc_meter = AverageMeter()
-        range_iou_meter = AverageMeter()
-        bev_acc_meter = AverageMeter()
-        bev_iou_meter = AverageMeter()
-        final_acc_meter = AverageMeter()
-        final_iou_meter = AverageMeter()
-        hetero_l = AverageMeter()  # 추후 필요시 사용
+        losses = AverageMeter()
+
+        moving_losses = AverageMeter()
+        movable_losses = AverageMeter()
+        bev_moving_losses = AverageMeter()
+        bev_movable_losses = AverageMeter()
+        final_moving_losses = AverageMeter()
+
+        jaccs = AverageMeter()
+        wces = AverageMeter()
+        acc = AverageMeter()
+        iou = AverageMeter()
+
+        bev_jaccs = AverageMeter()
+        bev_wces = AverageMeter()
+        bev_acc = AverageMeter()
+        bev_iou = AverageMeter()
+
+        final_jaccs = AverageMeter()
+        final_wces = AverageMeter()
+        final_acc = AverageMeter()
+        final_iou = AverageMeter()
+
+        movable_jaccs = AverageMeter()
+        movable_wces = AverageMeter()
+        movable_acc = AverageMeter()
+        movable_iou = AverageMeter()
+
+        bev_movable_jaccs = AverageMeter()
+        bev_movable_wces = AverageMeter()
+        bev_movable_acc = AverageMeter()
+        bev_movable_iou = AverageMeter()
+
+        hetero_l = AverageMeter()
         rand_imgs = []
 
         # evaluators와 criterion unpack
@@ -761,160 +820,263 @@ class Trainer:
                     GTs_moving = GTs_moving.cuda(non_blocking=True)
                     GTs_movable = GTs_movable.cuda(non_blocking=True)
 
-                # 모델 추론 (range, bev 각 branch의 결과 반환)
-                r_moving, r_movable, b_moving, b_movable = model(proj_full, bev_full)
+                # softmax 거쳤으므로 0-1 범위.
+                r_moving, r_movable, b_moving, b_movable = model(
+                    proj_full, bev_full)
 
-                r_moving_probs = unproject(points, r_moving, proj_x, proj_y)
-                r_movable_probs = unproject(points, r_movable, proj_x, proj_y)
-                b_moving_probs = unproject(points, b_moving, bev_proj_x, bev_proj_y)
-                b_movable_probs = unproject(points, b_movable, bev_proj_x, bev_proj_y)
-                final_probs = (r_moving_probs * b_moving_probs) / 2.0
+                """모든것을 batch 해제"""
+                """이 아래부터는 배치가 1임을 가정하고 배치를 해제합니다."""
+                points = points[0]
+                npoints = points.shape[0]
+                proj_full, bev_full = proj_full[0], bev_full[0]
+                proj_labels, proj_movable_labels = proj_labels[0], proj_movable_labels[0]
+                bev_labels, bev_movable_labels = bev_labels[0], bev_movable_labels[0]
+                proj_x, proj_y = proj_x[0], proj_y[0]
+                bev_proj_x, bev_proj_y = bev_proj_x[0], bev_proj_y[0]
+                GTs_moving, GTs_movable = GTs_moving[0], GTs_movable[0]
+                r_moving, r_movable = r_moving[0], r_movable[0]
+                b_moving, b_movable = b_moving[0], b_movable[0]
 
-                log_r_moving_probs = torch.log(r_moving_probs.clamp(min=1e-8))
-                log_r_movable_probs = torch.log(r_movable_probs.clamp(min=1e-8))
-                log_b_moving_probs = torch.log(b_moving_probs.clamp(min=1e-8))
-                log_b_movable_probs = torch.log(b_movable_probs.clamp(min=1e-8))
-                log_final_probs = torch.log(final_probs.clamp(min=1e-8))
+                # (n, 3)
+                # (1, ) =: n
+                # (13, h, w), (13, h_bev, w_bev)
+                # h, w
+                # h_bev, w_bev
+                # (150000, ), (150000, )
+                # (150000, ), (150000, )
+                # (n, ), (n, )
+                # (3, h, w), (3, h, w)
+                # (3, h_bev, w_bev), (3, h_bev, w_bev)
 
-                r_moving_losses, r_moving_preds = loss_and_to_labels(
-                    r_moving_probs,
-                    log_r_moving_probs,
-                    GTs_moving,
-                    criterion,
-                    self.ls,
-                )
+                ##############################################
+                proj_x = proj_x[:npoints]  # (n, )
+                proj_y = proj_y[:npoints]  # (n, )
+                bev_proj_x = bev_proj_x[:npoints]  # (n, )
+                bev_proj_y = bev_proj_y[:npoints]  # (n, )
 
-                r_movable_losses, r_movable_preds = loss_and_to_labels(
-                    r_movable_probs,
-                    log_r_movable_probs,
-                    GTs_movable,
-                    movable_criterion,
-                    self.ls,
-                )
+                # 3차원 공간에서 점별 클래스 확률
+                moving = r_moving[:, proj_y, proj_x]  # (3, n)
+                movable = r_movable[:, proj_y, proj_x]  # (3, n)
+                bev_moving = b_moving[:, bev_proj_y, bev_proj_x]  # (3, n)
+                bev_movable = b_movable[:, bev_proj_y, bev_proj_x]  # (3, n)
+                final_moving = (moving + bev_moving) / 2  # (3, n)
 
-                b_moving_losses, b_moving_preds = loss_and_to_labels(
-                    b_moving_probs,
-                    log_b_moving_probs,
-                    GTs_moving,
-                    criterion,
-                    self.ls,
-                )
+                ##############################################
 
-                b_movable_losses, b_movable_preds = loss_and_to_labels(
-                    b_movable_probs,
-                    log_b_movable_probs,
-                    GTs_movable,
-                    movable_criterion,
-                    self.ls,
-                )
+                log_moving = torch.log(moving.clamp(min=1e-8))
+                log_movable = torch.log(movable.clamp(min=1e-8))
+                log_bev_moving = torch.log(bev_moving.clamp(min=1e-8))
+                log_bev_movable = torch.log(bev_movable.clamp(min=1e-8))
+                log_final_moving = torch.log(final_moving.clamp(min=1e-8))
 
-                final_losses, final_preds = loss_and_to_labels(
-                    final_probs,
-                    log_final_probs,
-                    GTs_moving,
-                    criterion,
-                    self.ls,
-                )
+                l_moving, pred_moving, (jacc, wce) = loss_and_pred(
+                    moving, log_moving, GTs_moving, criterion, self.ls)
+                l_movable, pred_movable, (movable_jacc, movable_wce) = loss_and_pred(
+                    movable, log_movable, GTs_movable, movable_criterion, self.ls)
+                l_bev_moving, pred_bev_moving, (bev_jacc, bev_wce) = loss_and_pred(
+                    bev_moving, log_bev_moving, GTs_moving, criterion, self.ls)
+                l_bev_movable, pred_bev_movable, (bev_movable_jacc, bev_movable_wce) = loss_and_pred(
+                    bev_movable, log_bev_movable, GTs_movable, movable_criterion, self.ls)
+                l_final_moving, pred_final_moving, (final_jacc, final_wce) = loss_and_pred(
+                    final_moving, log_final_moving, GTs_moving, criterion, self.ls)
 
-                range_losses = r_moving_losses + r_movable_losses
-                bev_losses = b_moving_losses + b_movable_losses
+                l_range = l_moving + l_movable
+                l_bev = l_bev_moving + l_bev_movable
+                loss = l_range + l_bev + l_final_moving
 
-                # 평가 metric 업데이트
-                # Range 평가 (moving, movable 각각 평가 후 평균)
-                range_evaluator.addBatch(r_moving_preds, GTs_moving)
-                range_movable_evaluator.addBatch(r_movable_preds, GTs_movable)
-                avg_range_acc = (
-                    range_evaluator.getacc() + range_movable_evaluator.getacc()
-                ) / 2.0
-                avg_range_iou = (
-                    range_evaluator.getIoU()[0] + range_movable_evaluator.getIoU()[0]
-                ) / 2.0
+                range_evaluator.addBatch(pred_moving, GTs_moving)
+                range_movable_evaluator.addBatch(pred_movable, GTs_movable)
+                bev_evaluator.addBatch(pred_bev_moving, GTs_moving)
+                bev_movable_evaluator.addBatch(pred_bev_movable, GTs_movable)
+                final_evaluator.addBatch(pred_final_moving, GTs_moving)
 
-                # BEV 평가 (moving, movable 각각 평가 후 평균)
-                bev_evaluator.addBatch(b_moving_preds, GTs_moving)
-                bev_movable_evaluator.addBatch(b_movable_preds, GTs_movable)
-                avg_bev_acc = (
-                    bev_evaluator.getacc() + bev_movable_evaluator.getacc()
-                ) / 2.0
-                avg_bev_iou = (
-                    bev_evaluator.getIoU()[0] + bev_movable_evaluator.getIoU()[0]
-                ) / 2.0
+                losses.update(loss.mean().item())
 
-                # Final 평가 (주로 GTs_moving 기준)
-                final_evaluator.addBatch(final_preds, GTs_moving)
-                final_acc = final_evaluator.getacc()
-                final_iou_val = final_evaluator.getIoU()[0]
+                moving_losses.update(l_moving.mean().item())
+                jaccs.update(jacc.mean().item())
+                wces.update(wce.mean().item())
+                movable_losses.update(l_movable.mean().item())
+                movable_jaccs.update(movable_jacc.mean().item())
+                movable_wces.update(movable_wce.mean().item())
 
-                # 미터 업데이트 (배치 크기 기준)
-                range_loss_meter.update(range_losses.item(), points.size(0))
-                bev_loss_meter.update(bev_losses.item(), points.size(0))
-                final_loss_meter.update(final_losses.item(), points.size(0))
-                range_acc_meter.update(avg_range_acc, points.size(0))
-                range_iou_meter.update(avg_range_iou, points.size(0))
-                bev_acc_meter.update(avg_bev_acc, points.size(0))
-                bev_iou_meter.update(avg_bev_iou, points.size(0))
-                final_acc_meter.update(final_acc, points.size(0))
-                final_iou_meter.update(final_iou_val, points.size(0))
+                bev_moving_losses.update(l_bev_moving.mean().item())
+                bev_jaccs.update(bev_jacc.mean().item())
+                bev_wces.update(bev_wce.mean().item())
+                bev_movable_losses.update(l_bev_movable.mean().item())
+                bev_movable_jaccs.update(bev_movable_jacc.mean().item())
+                bev_movable_wces.update(bev_movable_wce.mean().item())
 
-                # 스캔 이미지 저장 (원하는 경우)
-                if save_scans:
-                    # 예시: proj_full의 첫 번째 배치를 이용하여 이미지 생성
-                    img_np = proj_full[0].cpu().numpy()
-                    pred_np = final_preds[0].cpu().numpy()
-                    gt_np = GTs_moving[0].cpu().numpy()
-                    out = make_log_img(img_np, None, pred_np, gt_np, color_fn)
-                    rand_imgs.append(out)
+                final_moving_losses.update(l_final_moving.mean().item())
+                final_jaccs.update(final_jacc.mean().item())
+                final_wces.update(final_wce.mean().item())
 
                 self.batch_time_e.update(time.time() - end)
                 end = time.time()
 
-            log_str = (
+            accuracy = range_evaluator.getacc()
+            jaccard, class_jaccard = range_evaluator.getIoU()
+            acc.update(accuracy.item())
+            iou.update(jaccard.item())
+            movable_accuracy = range_movable_evaluator.getacc()
+            movable_jaccard, movable_class_jaccard = range_movable_evaluator.getIoU()
+            movable_acc.update(movable_accuracy.item())
+            movable_iou.update(movable_jaccard.item())
+
+            bev_accuracy = bev_evaluator.getacc()
+            bev_jaccard, bev_class_jaccard = bev_evaluator.getIoU()
+            bev_acc.update(bev_accuracy.item())
+            bev_iou.update(bev_jaccard.item())
+            bev_movable_accuracy = bev_movable_evaluator.getacc()
+            bev_movable_jaccard, bev_movable_class_jaccard = bev_movable_evaluator.getIoU()
+            bev_movable_acc.update(bev_movable_accuracy.item())
+            bev_movable_iou.update(bev_movable_jaccard.item())
+
+            final_accuracy = final_evaluator.getacc()
+            final_jaccard, final_class_jaccard = final_evaluator.getIoU()
+            final_acc.update(final_accuracy.item())
+            final_iou.update(final_jaccard.item())
+
+            str_line = (
                 "*" * 80 + "\n"
                 "Validation set:\n"
-                f"Time avg per batch {self.batch_time_e.avg:.3f}\n"
-                f"Range Loss avg {range_loss_meter.avg:.4f}\n"
-                f"BEV Loss avg {bev_loss_meter.avg:.4f}\n"
-                f"Final Loss avg {final_loss_meter.avg:.4f}\n"
-                f"Range Acc avg {range_acc_meter.avg:.3f} | Range IoU avg {range_iou_meter.avg:.3f}\n"
-                f"BEV Acc avg {bev_acc_meter.avg:.3f} | BEV IoU avg {bev_iou_meter.avg:.3f}\n"
-                f"Final Acc avg {final_acc_meter.avg:.3f} | Final IoU avg {final_iou_meter.avg:.3f}\n"
-                f"Hetero Loss avg {hetero_l.avg:.4f}\n"
+                "Time avg per batch {batch_time.avg:.3f}\n"
+                "Loss avg {loss.avg:.4f}\n"
+
+                "MovingLoss avg {moving_loss.avg:.4f}\n"
+                "MovableLoss avg {movable_loss.avg:.4f}\n"
+                "MovingJaccard avg {moving_jac.avg:.4f}\n"
+                "MovingWCE avg {moving_wces.avg:.4f}\n"
+                "MovingAcc avg {moving_acc.avg:.6f}\n"
+                "MovingIoU avg {moving_iou.avg:.6f}\n"
+                "MovableJaccard avg {movable_jac.avg:.4f}\n"
+                "MovableWCE avg {movable_wce.avg:.4f}\n"
+                "MovableAcc avg {movable_acc.avg:.6f}\n"
+                "MovableIoU avg {movable_iou.avg:.6f}"
+
+                "BEV_MovingLoss avg {bev_moving_loss.avg:.4f}\n"
+                "BEV_MovableLoss avg {bev_movable_loss.avg:.4f}\n"
+                "BEV_MovingJaccard avg {bev_moving_jac.avg:.4f}\n"
+                "BEV_MovingWCE avg {bev_moving_wces.avg:.4f}\n"
+                "BEV_MovingAcc avg {bev_moving_acc.avg:.6f}\n"
+                "BEV_MovingIoU avg {bev_moving_iou.avg:.6f}\n"
+                "BEV_MovableJaccard avg {bev_movable_jac.avg:.4f}\n"
+                "BEV_MovableWCE avg {bev_movable_wce.avg:.4f}\n"
+                "BEV_MovableAcc avg {bev_movable_acc.avg:.6f}\n"
+                "BEV_MovableIoU avg {bev_movable_iou.avg:.6f}"
+
+                "Final_MovingLoss avg {final_moving_loss.avg:.4f}\n"
+                "Final_MovingJaccard avg {final_moving_jac.avg:.4f}\n"
+                "Final_MovingWCE avg {final_moving_wces.avg:.4f}\n"
+                "Final_MovingAcc avg {final_moving_acc.avg:.6f}\n"
+                "Final_MovingIoU avg {final_moving_iou.avg:.6f}\n"
+            ).format(
+                batch_time=self.batch_time_e,
+                loss=losses,
+
+                moving_loss=moving_losses,
+                movable_loss=movable_losses,
+                moving_jac=jaccs,
+                moving_wces=wces,
+                moving_acc=acc,
+                moving_iou=iou,
+                movable_jac=movable_jaccs,
+                movable_wce=movable_wces,
+                movable_acc=movable_acc,
+                movable_iou=movable_iou,
+
+                bev_moving_loss=bev_moving_losses,
+                bev_movable_loss=bev_movable_losses,
+                bev_moving_jac=bev_jaccs,
+                bev_moving_wces=bev_wces,
+                bev_moving_acc=bev_acc,
+                bev_moving_iou=bev_iou,
+                bev_movable_jac=bev_movable_jaccs,
+                bev_movable_wce=bev_movable_wces,
+                bev_movable_acc=bev_movable_acc,
+                bev_movable_iou=bev_movable_iou,
+
+                final_moving_loss=final_moving_losses,
+                final_moving_jac=final_jaccs,
+                final_moving_wces=final_wces,
+                final_moving_acc=final_acc,
+                final_moving_iou=final_iou,
             )
-            print(log_str)
-            save_to_txtlog(self.logdir, "log.txt", log_str)
+            print(str_line)
+            save_to_txtlog(self.logdir, "log.txt", str_line)
 
             print("-" * 80)
-            for idx, jacc in enumerate(final_evaluator.getIoU()[1]):
-                self.info["valid_classes/" + class_func(idx)] = jacc
-                class_log = f"IoU class {idx} [{class_func(idx)}] = {jacc:.6f}"
-                print(class_log)
-                save_to_txtlog(self.logdir, "log.txt", class_log)
+            # print also classwise
+            for i, jacc in enumerate(class_jaccard):
+                self.info["valid_classes/" + class_func(i)] = jacc
+                str_line = "IoU class {i:} [{class_str:}] = {jacc:.6f}".format(
+                    i=i, class_str=class_func(i), jacc=jacc
+                )
+                print(str_line)
+                save_to_txtlog(self.logdir, "log.txt", str_line)
 
             print("-" * 80)
-            final_log = "*" * 80
-            print(final_log)
-            save_to_txtlog(self.logdir, "log.txt", final_log)
+            for i, jacc in enumerate(movable_class_jaccard):
+                self.info["valid_classes/" +
+                          class_func(i, movable=True)] = jacc
+                str_line = "IoU class {i:} [{class_str:}] = {jacc:.6f}".format(
+                    i=i, class_str=class_func(i, movable=True), jacc=jacc
+                )
+                print(str_line)
+                save_to_txtlog(self.logdir, "log.txt", str_line)
+
+            print("-" * 80)
+            # print also classwise
+            for i, jacc in enumerate(bev_class_jaccard):
+                self.info["valid_classes/" + class_func(i)] = jacc
+                str_line = "IoU class {i:} [{class_str:}] = {jacc:.6f}".format(
+                    i=i, class_str=class_func(i), jacc=jacc
+                )
+                print(str_line)
+                save_to_txtlog(self.logdir, "log.txt", str_line)
+
+            print("-" * 80)
+            for i, jacc in enumerate(bev_movable_class_jaccard):
+                self.info["valid_classes/" +
+                          class_func(i, movable=True)] = jacc
+                str_line = "IoU class {i:} [{class_str:}] = {jacc:.6f}".format(
+                    i=i, class_str=class_func(i, movable=True), jacc=jacc
+                )
+                print(str_line)
+                save_to_txtlog(self.logdir, "log.txt", str_line)
+
+            print("-" * 80)
+            # print also classwise
+            for i, jacc in enumerate(final_class_jaccard):
+                self.info["valid_classes/" + class_func(i)] = jacc
+                str_line = "IoU class {i:} [{class_str:}] = {jacc:.6f}".format(
+                    i=i, class_str=class_func(i), jacc=jacc
+                )
+                print(str_line)
+                save_to_txtlog(self.logdir, "log.txt", str_line)
+
+            str_line = "*" * 80
+            print(str_line)
+            save_to_txtlog(self.logdir, "log.txt", str_line)
 
         return (
-            range_loss_meter.avg,
-            bev_loss_meter.avg,
-            final_loss_meter.avg,
-            range_acc_meter.avg,
-            range_iou_meter.avg,
-            bev_acc_meter.avg,
-            bev_iou_meter.avg,
-            final_acc_meter.avg,
-            final_iou_meter.avg,
-            hetero_l.avg,
+            losses.avg,
+
+            acc.avg,
+            iou.avg,
+
+            bev_acc.avg,
+            bev_iou.avg,
+
+            final_acc.avg,
+            final_iou.avg,
+
             rand_imgs,
+            hetero_l.avg,
         )
 
     def update_training_info(
         self,
         epoch,
-        range_loss,
-        bev_loss,
-        final_loss,
         range_acc,
         range_iou,
         bev_acc,
@@ -922,11 +1084,8 @@ class Trainer:
         final_acc,
         final_iou,
         update_ratio,
+        hetero_l,
     ):
-        """
-        학습 과정에서 range/BEV/final 각각의 loss/acc/IoU를 받아 self.info에 기록하고,
-        best 기록을 갱신하며 체크포인트를 저장합니다.
-        """
         # 1) self.info에 현재 학습 스텝 정보 기록
         self.info["train_update"] = update_ratio
 
