@@ -10,14 +10,12 @@ from torch import distributed as dist
 import torch
 from utils.utils import *
 
-DEBUG_MODE = False
+number_of_gpus = torch.cuda.device_count()
+print("device count: ", number_of_gpus)
 
-print("device count: ", torch.cuda.device_count())
-
-# if not DEBUG_MODE:
-#     dist.init_process_group(backend="nccl")
-#     print("world_size: ", dist.get_world_size())
-
+if number_of_gpus >= 2:
+    dist.init_process_group(backend="nccl")
+    print("world_size: ", dist.get_world_size())
 
 # from modules.SalsaNextWithMotionAttention import *
 
@@ -44,15 +42,13 @@ if __name__ == "__main__":
     FLAGS, unparsed = parser.parse_known_args()
 
     local_rank = 0
-    # if not DEBUG_MODE:
-    #     local_rank = int(os.environ["LOCAL_RANK"])
+    if number_of_gpus >= 2:
+        local_rank = int(os.environ["LOCAL_RANK"])
 
     torch.cuda.set_device(local_rank)
     print(f"Local Rank {local_rank}를 설정합니다.")
 
-    FLAGS.log = os.path.join(
-        FLAGS.log, datetime.now().strftime("%Y-%-m-%d-%H:%M") + FLAGS.name
-    )
+    FLAGS.log = os.path.join(FLAGS.log, datetime.now().strftime("%Y-%-m-%d-%H:%M") + FLAGS.name)
 
     # open arch / data config file
     ARCH = load_yaml(FLAGS.arch_cfg)

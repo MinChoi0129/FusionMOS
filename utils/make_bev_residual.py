@@ -1,50 +1,251 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-참고 코드의 흐름을 그대로 따르며, 변수명에 BEV를 포함하고,
-config의 키들을 그대로 사용하며, fov_up, fov_down 없이 BEV Residual Image Generation 코드.
-"""
-
 import os
-
-os.environ["OMP_NUM_THREADS"] = "4"
-import yaml
 import numpy as np
-import matplotlib.pyplot as plt
 from tqdm import tqdm
-from icecream import ic
+import multiprocessing
+
+class BevScan:
+    moving_learning_map = {
+        0: 0,
+        1: 0,
+        9: 1,
+        10: 1,
+        11: 1,
+        13: 1,
+        15: 1,
+        16: 1,
+        18: 1,
+        20: 1,
+        30: 1,
+        31: 1,
+        32: 1,
+        40: 1,
+        44: 1,
+        48: 1,
+        49: 1,
+        50: 1,
+        51: 1,
+        52: 1,
+        60: 1,
+        70: 1,
+        71: 1,
+        72: 1,
+        80: 1,
+        81: 1,
+        99: 1,
+        251: 2,
+        252: 2,
+        253: 2,
+        254: 2,
+        255: 2,
+        256: 2,
+        257: 2,
+        258: 2,
+        259: 2,
+    }
+    movable_learning_map = {
+        0: 0,
+        1: 0,
+        9: 1,
+        16: 1,
+        40: 1,
+        44: 1,
+        48: 1,
+        49: 1,
+        50: 1,
+        51: 1,
+        52: 1,
+        60: 1,
+        70: 1,
+        71: 1,
+        72: 1,
+        80: 1,
+        81: 1,
+        99: 1,
+        10: 2,
+        11: 2,
+        13: 2,
+        15: 2,
+        18: 2,
+        20: 2,
+        30: 2,
+        31: 2,
+        32: 2,
+        251: 2,
+        252: 2,
+        253: 2,
+        254: 2,
+        255: 2,
+        256: 2,
+        257: 2,
+        258: 2,
+        259: 2,
+    }
+
+    def __init__(self, velodyne_path, label_path, proj_H, proj_W, max_range, min_range):
+        self.velodyne_path = velodyne_path
+        self.label_path = label_path
+        self.proj_H = proj_H
+        self.proj_W = proj_W
+        self.max_range = max_range
+        self.min_range = min_range
+        self.process()
+    
+    def load_velodyne(self):
+        scan = np.fromfile(self.velodyne_path, dtype=np.float32).reshape((-1, 4)) # nx4
+        points = scan[:, :3] # nx3
+        remissions = scan[:, 3] # nx1
+        homo_points = np.ones((points.shape[0], 4), dtype=np.float32) # nx4
+        homo_points[:, :3] = points # nx4 (XYZ1, XYZ1, XYZ1, ... , XYZ1)
+
+        self.homo_points = homo_points
+        self.remissions = remissions
+        return self.homo_points, self.remissions
+    
+    def load_label(self):
+        """
+        .label 파일에서 semantic 라벨과 instance 라벨을 읽어옴.
+        반환: sem_label (n,), inst_label (n,)
+        """
+        label = np.fromfile(self.label_path, dtype=np.int32)
+        self.sem_label = label & 0xFFFF
+        self.inst_label = label >> 16
+        return self.sem_label, self.inst_label
+
+    def create_ternary_label(self, mapping_dict):
+        mapped = np.full_like(self.bev_sem_label, -1, dtype=np.int32)
+        unique = np.unique(self.bev_sem_label)
+        for val in unique:
+            if val in mapping_dict:
+                mapped[self.bev_sem_label == val] = mapping_dict[val]
+            else:
+                mapped[self.bev_sem_label == val] = 0
+        ternary = np.where(self.bev_sem_label == -1, 0, mapped)
+        return ternary
+    
+    @staticmethod
+    def bev_projection_only(homo_points, proj_H, proj_W, max_range, min_range):
+        xy_dist = np.sqrt(homo_points[:, 0] ** 2 + homo_points[:, 1] ** 2)
+        valid_mask = (xy_dist > min_range) & (xy_dist < max_range)
+        filtered_points = homo_points[valid_mask]
+        filtered_dist = xy_dist[valid_mask]
+
+        x_img = (filtered_points[:, 0] + max_range) / (2.0 * max_range)
+        y_img = (filtered_points[:, 1] + max_range) / (2.0 * max_range)
+        x_img = np.clip(np.floor(x_img * proj_W), 0, proj_W - 1).astype(np.int32)
+        y_img = np.clip(np.floor(y_img * proj_H), 0, proj_H - 1).astype(np.int32)
+
+        # 먼 점부터 투영 (덮어쓰기를 위해)
+        order = np.argsort(filtered_dist)[::-1]
+        x_img = x_img[order]
+        y_img = y_img[order]
+        # filtered_dist = filtered_dist[order]
+
+        bev_range = np.full((proj_H, proj_W), 0, dtype=np.float32)
+        bev_range[y_img, x_img] = 1
+
+        # norm_range = np.clip(bev_range, 0, max_range) / max_range
+
+        return bev_range
+
+    def bev_projection_full(self):
+        xy_dist = np.sqrt(self.homo_points[:, 0] ** 2 + self.homo_points[:, 1] ** 2)
+        valid_mask = (xy_dist > self.min_range) & (xy_dist < self.max_range)
+        filtered_points = self.homo_points[valid_mask]
+        # filtered_rem = self.remissions[valid_mask]
+        filtered_dist = xy_dist[valid_mask]
+        # orig_idx = np.nonzero(valid_mask)[0]  # 원본 점 인덱스
+
+        # if filtered_points.shape[0] == 0:
+        #     empty = np.full((self.proj_H, self.proj_W), -1, dtype=np.float32)
+        #     return (
+        #         empty,
+        #         np.full((self.proj_H, self.proj_W, 3), -1, dtype=np.float32),
+        #         empty,
+        #         np.array([]),
+        #         np.array([]),
+        #         np.array([]),
+        #         np.full((self.proj_H, self.proj_W), -1, dtype=np.int32),
+        #     )
+
+        # x, y 좌표를 [0,1]로 정규화 후 이미지 크기에 맞게 변환
+        x_img = (filtered_points[:, 0] + self.max_range) / (2.0 * self.max_range)
+        y_img = (filtered_points[:, 1] + self.max_range) / (2.0 * self.max_range)
+        x_img = np.clip(np.floor(x_img * self.proj_W), 0, self.proj_W - 1).astype(np.int32)
+        y_img = np.clip(np.floor(y_img * self.proj_H), 0, self.proj_H - 1).astype(np.int32)
+
+        # 먼 점부터 투영 (덮어쓰기를 위해)
+        order = np.argsort(filtered_dist)[::-1]
+        x_img = x_img[order]
+        y_img = y_img[order]
+        # filtered_dist = filtered_dist[order]
+        # filtered_points = filtered_points[order]
+        # filtered_rem = filtered_rem[order]
+        # proj_idx_ordered = orig_idx[order]
+
+        bev_range = np.full((self.proj_H, self.proj_W), 0, dtype=np.float32)
+        # bev_xyz = np.full((self.proj_H, self.proj_W, 3), -1, dtype=np.float32)
+        # bev_remission = np.full((self.proj_H, self.proj_W), -1, dtype=np.float32)
+        # proj_idx = np.full((self.proj_H, self.proj_W), -1, dtype=np.int32)
+
+        bev_range[y_img, x_img] = 1
+        # bev_xyz[y_img, x_img, :] = filtered_points[:, :3]
+        # bev_remission[y_img, x_img] = filtered_rem
+        # proj_idx[y_img, x_img] = proj_idx_ordered
 
 
-###############################################################################
-#                              유틸 함수들                                      #
-###############################################################################
+        # # 정규화: range와 remission 채널
+        # norm_range = np.clip(bev_range, 0, self.max_range) / self.max_range
+        # if np.any(bev_remission > 0):
+        #     norm_rem = np.clip(
+        #         bev_remission, 0, np.max(bev_remission[bev_remission > 0])
+        #     ) / np.max(bev_remission[bev_remission > 0])
+        # else:
+        #     norm_rem = bev_remission
+        
+        self.bev_range = bev_range
+        # self.bev_xyz = bev_xyz.transpose((2, 0, 1))  # HWC -> CHW
+        # self.bev_remission = norm_rem
+        # self.bev_proj_x = x_img
+        # self.bev_proj_y = y_img
+        # self.bev_unproj_range = filtered_dist
+        # self.bev_proj_idx = proj_idx
+
+        # return self.bev_range, self.bev_xyz, self.bev_remission, self.bev_proj_x, self.bev_proj_y, self.bev_unproj_range, self.bev_proj_idx
+    
+    def bev_labels_full(self):
+        self.bev_sem_label = np.full((self.proj_H, self.proj_W), -1, dtype=np.int32)
+        valid = self.bev_proj_idx >= 0
+        self.bev_sem_label[valid] = self.sem_label[self.bev_proj_idx[valid]]
+
+        self.bev_moving_ternary_label = self.create_ternary_label(BevScan.moving_learning_map)
+        self.bev_movable_ternary_label = self.create_ternary_label(BevScan.movable_learning_map)
+
+        return self.bev_sem_label, self.bev_moving_ternary_label, self.bev_movable_ternary_label
+
+    def process(self):
+        self.load_velodyne()
+        # self.load_label()
+        self.bev_projection_full()
+        # self.bev_labels_full()
+
+
 def check_and_makedirs(dir_path):
     if not os.path.exists(dir_path):
         os.makedirs(dir_path)
-
-
-def load_yaml(path):
-    if yaml.__version__ >= "5.1":
-        config = yaml.load(open(path), Loader=yaml.FullLoader)
-    else:
-        config = yaml.load(open(path))
-    return config
-
 
 def load_poses(pose_path):
     """파일로부터 T_w_cam0 pose (n,4,4)를 불러옵니다."""
     poses = []
     try:
-        if ".txt" in pose_path:
-            with open(pose_path, "r") as f:
-                lines = f.readlines()
-                for line in lines:
-                    T_w_cam0 = np.fromstring(line, dtype=float, sep=" ")
-                    T_w_cam0 = T_w_cam0.reshape(3, 4)
-                    T_w_cam0 = np.vstack((T_w_cam0, [0, 0, 0, 1]))
-                    poses.append(T_w_cam0)
-        else:
-            poses = np.load(pose_path)["arr_0"]
+        with open(pose_path, "r") as f:
+            lines = f.readlines()
+            for line in lines:
+                T_w_cam0 = np.fromstring(line, dtype=float, sep=" ")
+                T_w_cam0 = T_w_cam0.reshape(3, 4)
+                T_w_cam0 = np.vstack((T_w_cam0, [0, 0, 0, 1]))
+                poses.append(T_w_cam0)
     except FileNotFoundError:
         print("Ground truth poses are not available.")
     return np.array(poses)
@@ -67,17 +268,6 @@ def load_calib(calib_path):
     return np.array(T_cam_velo)
 
 
-def load_vertex(scan_path):
-    """KITTI .bin 파일로부터 3D 포인트 (n×4: x, y, z, 1)를 불러옵니다."""
-    current_vertex = np.fromfile(scan_path, dtype=np.float32)
-    current_vertex = current_vertex.reshape((-1, 4))
-    current_points = current_vertex[:, 0:3]
-    # homogeneous 좌표를 위해 마지막 열을 1로 채움
-    current_vertex = np.ones((current_points.shape[0], current_points.shape[1] + 1))
-    current_vertex[:, :-1] = current_points
-    return current_vertex
-
-
 def load_files(folder):
     """폴더 내의 모든 파일 (예: *.bin)을 정렬하여 불러옵니다."""
     file_paths = [
@@ -89,230 +279,141 @@ def load_files(folder):
     return file_paths
 
 
-###############################################################################
-#              BEV 투영 함수 (bev_projection) - fov_up, fov_down 제거            #
-###############################################################################
-def bev_projection(current_vertex, proj_H, proj_W, max_range, min_range):
+
+# -------------------------------------------------------------
+# 필요한 함수들 (check_and_makedirs, load_poses, load_calib, load_files)
+# 그리고 BevScan 클래스는 이전 코드와 동일하다고 가정
+# -------------------------------------------------------------
+
+def load_all_scans_into_memory(scan_paths):
     """
-    current_vertex: n×4 (x, y, z, 1)
-    proj_H, proj_W: range image 해상도
-    max_range, min_range: XY 평면 거리 필터링 범위
-    리턴: (proj_H, proj_W, 4) 배열
-          [:,:,0:3] = (x, y, z)
-          [:,:,3]   = XY 평면 거리 (range)
+    모든 프레임의 (.bin)과 (.label)을 한 번에 로드해
+    포인트 클라우드(또는 homo_points), pose, label 등을 메모리에 저장.
     """
-    # XY 평면 거리 계산
-    xy_dist = np.sqrt(current_vertex[:, 0] ** 2 + current_vertex[:, 1] ** 2)
-    # 필터링
-    valid_mask = (xy_dist > min_range) & (xy_dist < max_range)
-    current_vertex = current_vertex[valid_mask]
-    xy_dist = xy_dist[valid_mask]
-    if current_vertex.shape[0] == 0:
-        return np.full((proj_H, proj_W, 4), -1, dtype=np.float32)
-    # 이미지 좌표로 변환: [-max_range, +max_range] -> [0, 1] -> [0, proj_W 또는 proj_H]
-    x_img = (current_vertex[:, 0] + max_range) / (2.0 * max_range)
-    y_img = (current_vertex[:, 1] + max_range) / (2.0 * max_range)
-    x_img = np.floor(x_img * proj_W).astype(np.int32)
-    y_img = np.floor(y_img * proj_H).astype(np.int32)
-    x_img = np.clip(x_img, 0, proj_W - 1)
-    y_img = np.clip(y_img, 0, proj_H - 1)
-    # 깊이 기준 내림차순 소팅 (더 먼 점부터 처리)
-    order = np.argsort(xy_dist)[::-1]
-    xy_dist = xy_dist[order]
-    current_vertex = current_vertex[order]
-    x_img = x_img[order]
-    y_img = y_img[order]
-    # BEV 투영 결과 초기화: 유효하지 않은 영역은 -1
-    proj_vertex = np.full((proj_H, proj_W, 4), -1, dtype=np.float32)
-    proj_vertex[y_img, x_img, 0] = current_vertex[:, 0]
-    proj_vertex[y_img, x_img, 1] = current_vertex[:, 1]
-    proj_vertex[y_img, x_img, 2] = current_vertex[:, 2]
-    proj_vertex[y_img, x_img, 3] = xy_dist
-    return proj_vertex
+    all_homo_points = []
+    # all_labels = []  # 필요하다면 함께 저장
+    for scan_p in tqdm(scan_paths, total=len(scan_paths), desc="Loading scans"):
+        scan = np.fromfile(scan_p, dtype=np.float32).reshape((-1, 4))
+        points = scan[:, :3]
+        homo_points = np.ones((points.shape[0], 4), dtype=np.float32)
+        homo_points[:, :3] = points
+        all_homo_points.append(homo_points)
+    
+        
+    return all_homo_points  # , all_labels
 
 
-###############################################################################
-#              process_one_seq_bev 함수 (참고 코드 흐름 그대로)                #
-###############################################################################
-def process_one_seq_bev(config):
-    # config의 키를 그대로 사용
-    num_frames = config["num_frames"]
-    debug = config["debug"]
-    normalize = config["normalize"]
-    num_last_n = config["num_last_n"]
-    visualize = config["visualize"]
+def process_one_seq_bev_in_memory(config):
+    """
+    프레임별로 파일 I/O를 계속 하지 않고,
+    미리 메모리에 올려놓은 뒤 diff를 계산.
+    """
+    scans_folder = config["scans_folder"]
+    labels_folder = config["labels_folder"]
+    pose_file = config["pose_file"]
+    calib_file = config["calib_file"]
     bev_residual_folder = config["bev_residual_folder"]
-    visualization_folder_bev = config["visualization_folder_bev"]
+    bev_h = config["bev_h"]
+    bev_w = config["bev_w"]
+    max_range = config["max_range"]
+    min_range = config["min_range"]
+    num_last_n = config["num_last_n"]
 
     check_and_makedirs(bev_residual_folder)
-    if visualize:
-        check_and_makedirs(visualization_folder_bev)
 
-    # Pose 불러오기 및 첫 프레임 기준 inv 계산
-    pose_file = config["pose_file"]
+    # 1) Pose 및 Calibration
     poses = np.array(load_poses(pose_file))
     inv_frame0 = np.linalg.inv(poses[0])
-
-    # Calibration 불러오기 및 좌표계 변환 (카메라→LiDAR)
-    calib_file = config["calib_file"]
-    T_cam_velo = load_calib(calib_file)
-    T_cam_velo = np.asarray(T_cam_velo).reshape((4, 4))
+    T_cam_velo = load_calib(calib_file).reshape((4, 4))
     T_velo_cam = np.linalg.inv(T_cam_velo)
     new_poses = []
     for pose in poses:
-        new_poses.append(T_velo_cam.dot(inv_frame0).dot(pose).dot(T_cam_velo))
+        new_poses.append(T_velo_cam @ inv_frame0 @ pose @ T_cam_velo)
     poses = np.array(new_poses)
 
-    # LiDAR 스캔 파일 불러오기
-    scan_folder = config["scan_folder"]
-    scan_paths = load_files(scan_folder)
+    # 2) 스캔/레이블 파일 목록
+    scan_paths = load_files(scans_folder)
+    frame_count = len(scan_paths)
 
-    if num_frames >= len(poses) or num_frames <= 0:
-        print("generate training data for all frames with number of: ", len(poses))
-    else:
-        poses = poses[:num_frames]
-        scan_paths = scan_paths[:num_frames]
+    # 3) 모든 스캔을 메모리에 올려놓기
+    all_homo_points = load_all_scans_into_memory(scan_paths)
+    # => all_homo_points[i] : i번 프레임의 homo_points (nx4)
 
-    bev_image_params = config["bev_image"]
-
-    # 시퀀스 전체에 대해 BEV residual 이미지 생성
-    for frame_idx in tqdm(range(len(scan_paths))):
+    # 4) 프레임 순회하면서 diff 계산
+    for frame_idx in tqdm(range(frame_count), desc=f"Processing"):
         file_name = os.path.join(bev_residual_folder, str(frame_idx).zfill(6))
-        # residual 이미지 초기화: 0으로 초기화 (0은 데이터 없음)
-        diff_image = np.full(
-            (bev_image_params["height"], bev_image_params["width"]), 0, dtype=np.float32
-        )
-        # 처음 num_last_n 프레임은 dummy 파일 생성
         if frame_idx < num_last_n:
+            diff_image = np.zeros((bev_h, bev_w), dtype=np.float32)
             np.save(file_name, diff_image)
-        else:
-            # 현재 스캔의 BEV range image 생성
-            current_pose = poses[frame_idx]
-            current_scan = load_vertex(scan_paths[frame_idx])
-            current_bev = bev_projection(
-                current_scan.astype(np.float32),
-                bev_image_params["height"],
-                bev_image_params["width"],
-                bev_image_params["max_range"],
-                bev_image_params["min_range"],
-            )
-            current_range = current_bev[:, :, 3]
+            continue
 
-            # 이전 스캔을 현재 좌표계로 변환 후 BEV range image 생성
-            last_pose = poses[frame_idx - num_last_n]
-            last_scan = load_vertex(scan_paths[frame_idx - num_last_n])
-            last_scan_transformed = (
-                np.linalg.inv(current_pose).dot(last_pose).dot(last_scan.T).T
-            )
-            last_bev = bev_projection(
-                last_scan_transformed.astype(np.float32),
-                bev_image_params["height"],
-                bev_image_params["width"],
-                bev_image_params["max_range"],
-                bev_image_params["min_range"],
-            )
-            last_range = last_bev[:, :, 3]
+        # 현재 프레임 BEV
+        current_pose = poses[frame_idx]
+        current_points = all_homo_points[frame_idx]
+        # current 라벨이 필요하다면 사용 (all_labels[frame_idx])
+        
+        # current frame의 BEV 생성
+        current_bev = BevScan.bev_projection_only(
+            current_points,
+            bev_h, bev_w,
+            max_range, min_range
+        )
 
-            valid_mask = (
-                (current_range > bev_image_params["min_range"])
-                & (current_range < bev_image_params["max_range"])
-                & (last_range > bev_image_params["min_range"])
-                & (last_range < bev_image_params["max_range"])
-            )
-            difference = np.abs(current_range[valid_mask] - last_range[valid_mask])
-            if normalize:
-                difference = difference / np.clip(current_range[valid_mask], 1e-6, None)
-            diff_image[valid_mask] = difference
+        # 이전 프레임 (frame_idx - num_last_n)
+        last_pose = poses[frame_idx - num_last_n]
+        last_points = all_homo_points[frame_idx - num_last_n]
 
-            if debug:
-                fig, axs = plt.subplots(3, 1, figsize=(8, 12))
-                axs[0].imshow(
-                    last_range,
-                    cmap="viridis",
-                    vmin=0,
-                    vmax=bev_image_params["max_range"],
-                )
-                axs[0].set_title("Last BEV Range")
-                axs[1].imshow(
-                    current_range,
-                    cmap="viridis",
-                    vmin=0,
-                    vmax=bev_image_params["max_range"],
-                )
-                axs[1].set_title("Current BEV Range")
-                axs[2].imshow(diff_image, cmap="viridis", vmin=0, vmax=1)
-                axs[2].set_title("BEV Residual")
-                plt.tight_layout()
-                plt.show()
+        # last_points를 current 좌표계로 변환
+        last_scan_transformed = (np.linalg.inv(current_pose) @ last_pose @ last_points.T).T[:, :3]
 
-            if visualize:
-                image_name = os.path.join(
-                    visualization_folder_bev, str(frame_idx).zfill(6) + ".png"
-                )
-                image_name2 = os.path.join(
-                    visualization_folder_bev, str(frame_idx).zfill(6) + "_current.png"
-                )
-                plt.imsave(image_name, diff_image, cmap="viridis")
-                plt.imsave(image_name2, current_range, cmap="viridis")
+        # 변환된 점으로 BEV 만들기
+        last_bev = BevScan.bev_projection_only(
+            last_scan_transformed.astype(np.float32),
+            bev_h, bev_w,
+            max_range, min_range
+        )
 
-            np.save(file_name, diff_image)
+        # diff
+        diff_image = np.abs(current_bev - last_bev)
+        np.save(file_name + ".npy", diff_image)
+    
+    print(f"[Done] {bev_residual_folder} - 총 {frame_count}개 프레임 처리 완료 (In-Memory)")
 
 
-###############################################################################
-#             단일 (seq_id, num_last_n) 처리 및 시퀀스 병렬 처리 함수             #
-###############################################################################
-def process_residual_for_num_last_n(seq_id, num_last_n, dataset_folder):
-    scan_folder = os.path.join(dataset_folder, f"{seq_id:02d}", "velodyne")
+def process_residual_for_num_last_n_in_memory(seq_id, num_last_n, dataset_folder):
+    """
+    한 시퀀스를 메모리에 전부 로드한 뒤 diff를 계산하는 예시
+    """
+    scans_folder = os.path.join(dataset_folder, f"{seq_id:02d}", "velodyne")
+    labels_folder = os.path.join(dataset_folder, f"{seq_id:02d}", "labels")
     pose_file = os.path.join(dataset_folder, f"{seq_id:02d}", "poses.txt")
     calib_file = os.path.join(dataset_folder, f"{seq_id:02d}", "calib.txt")
-    bev_residual_folder = os.path.join(
-        dataset_folder, f"{seq_id:02d}", f"bev_residual_images_{num_last_n}"
-    )
-    visualization_folder_bev = os.path.join(
-        dataset_folder, f"{seq_id:02d}", f"vis_bev_residual_{num_last_n}"
-    )
+    bev_residual_folder = os.path.join(dataset_folder, f"{seq_id:02d}", f"bev_residual_images_{num_last_n}")
 
     config = {
-        "num_frames": -1,  # -1이면 전체 프레임
-        "debug": False,  # True 시 디버그 시각화
-        "normalize": True,  # range normalize
-        "num_last_n": num_last_n,  # offset
-        "visualize": False,  # PNG 저장 여부
-        "bev_residual_folder": bev_residual_folder,
-        "visualization_folder_bev": visualization_folder_bev,
+        "scans_folder": scans_folder,
+        "labels_folder": labels_folder,
         "pose_file": pose_file,
         "calib_file": calib_file,
-        "scan_folder": scan_folder,
-        "bev_image": {
-            "height": 768,
-            "width": 768,
-            "max_range": 50.0,
-            "min_range": 2.0,
-        },
+        "num_last_n": num_last_n,
+        "bev_residual_folder": bev_residual_folder,
+        "bev_h": 384,
+        "bev_w": 384,
+        "max_range": 50.0,
+        "min_range": 2.0,
     }
 
-    process_one_seq_bev(config)
+    process_one_seq_bev_in_memory(config)
 
 
-def process_sequence_in_parallel(seq_id, dataset_folder):
-    import multiprocessing
-
-    num_workers = multiprocessing.cpu_count() // 2  # 필요에 따라 조정
-    num_last_n_list = range(1, 9)
-    tasks = [(seq_id, n, dataset_folder) for n in num_last_n_list]
-    with multiprocessing.Pool(num_workers) as pool:
-        pool.starmap(process_residual_for_num_last_n, tasks)
-    print(
-        f"[Done] Sequence {seq_id:02d} - all {len(num_last_n_list)} residuals created"
-    )
-
-
-###############################################################################
-#                              메인 실행 예시                                 #
-###############################################################################
 if __name__ == "__main__":
     dataset_folder = "/home/ssd_4tb/minjae/KITTI/dataset/sequences"
     seq_list = range(11)  # 0 ~ 10
+    num_last_n_list = range(1, 9)  # 1~8
+
+    # 시퀀스는 순차 처리 예시(원하면 Pool 사용 가능)
     for seq_id in seq_list:
-        process_sequence_in_parallel(seq_id, dataset_folder)
-    print("모든 시퀀스의 BEV residual 생성이 완료되었습니다.")
+        for n in num_last_n_list:
+            process_residual_for_num_last_n_in_memory(seq_id, n, dataset_folder)
+
+    print("모든 시퀀스 - In-Memory BEV residual 생성이 완료되었습니다.")

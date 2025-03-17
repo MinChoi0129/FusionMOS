@@ -28,7 +28,6 @@ from common.warmupLR import warmupLR
 
 from modules.MFMOS import MFMOS
 from modules.loss.Lovasz_Softmax import Lovasz_softmax_PointCloud
-from modules.loss.custom_loss import loss_and_pred
 from modules.tools import (
     AverageMeter,
     iouEval,
@@ -38,7 +37,19 @@ from modules.tools import (
 )
 
 from torch import distributed as dist
-number_of_gpus = torch.cuda.device_count()
+
+
+def loss_and_pred(probs, log_probs, labels, each_criterion, ls_func):
+    if probs.numel() == 0:
+        raise ValueError("No unprojected predictions found")
+
+    jacc = ls_func(probs, labels)
+    wce = each_criterion(log_probs.T.double(), labels).float()
+    loss = wce + jacc
+
+    pred = probs.argmax(dim=0)  # (n, )
+    return loss, pred, (jacc, wce)
+
 
 class Trainer:
     def __init__(
@@ -325,10 +336,18 @@ class Trainer:
     def train(self):
         self.init_evaluator()
         for epoch in range(self.epoch, self.ARCH["train"]["max_epochs"]):
-            if number_of_gpus >= 2:
-                self.parser.train_sampler.set_epoch(epoch)
-                
-            overall_loss, range_acc, range_iou, bev_acc, bev_iou, final_acc, final_iou, update_ratio, hetero_l = self.train_epoch(
+            # self.parser.train_sampler.set_epoch(epoch)
+            (
+                overall_loss,
+                range_acc,
+                range_iou,
+                bev_acc,
+                bev_iou,
+                final_acc,
+                final_iou,
+                update_ratio,
+                hetero_l,
+            ) = self.train_epoch(
                 train_loader=self.parser.get_train_set(),
                 model=self.model,
                 all_criterion=(self.criterion, self.movable_criterion),
@@ -344,13 +363,30 @@ class Trainer:
                 scheduler=self.scheduler,
                 report=self.ARCH["train"]["report_batch"],
             )
-
-
             if self.local_rank == 0:
-                self.update_training_info(epoch, overall_loss, range_acc, range_iou, bev_acc, bev_iou, final_acc, final_iou, update_ratio, hetero_l)
-
+                self.update_training_info(
+                    epoch,
+                    overall_loss,
+                    range_acc,
+                    range_iou,
+                    bev_acc,
+                    bev_iou,
+                    final_acc,
+                    final_iou,
+                    update_ratio,
+                    hetero_l,
+                )
             if epoch % self.ARCH["train"]["report_epoch"] == 0 and self.local_rank == 0:
-                overall_loss, range_acc, range_iou, bev_acc, bev_iou, final_acc, final_iou, hetero_l = self.validate(
+                (
+                    overall_loss,
+                    range_acc,
+                    range_iou,
+                    bev_acc,
+                    bev_iou,
+                    final_acc,
+                    final_iou,
+                    hetero_l,
+                ) = self.validate(
                     val_loader=self.parser.get_valid_set(),
                     model=self.model,
                     all_criterion=(self.criterion, self.movable_criterion),
@@ -363,8 +399,17 @@ class Trainer:
                     ),
                     class_func=self.parser.get_xentropy_class_string,
                 )
-                self.update_validation_info(epoch, overall_loss, range_acc, range_iou, bev_acc, bev_iou, final_acc, final_iou, hetero_l)
-            
+                self.update_validation_info(
+                    epoch,
+                    overall_loss,
+                    range_acc,
+                    range_iou,
+                    bev_acc,
+                    bev_iou,
+                    final_acc,
+                    final_iou,
+                    hetero_l,
+                )
             if self.local_rank == 0:
                 Trainer.save_to_tensorboard(
                     logdir=self.logdir,
@@ -375,93 +420,153 @@ class Trainer:
                     model=self.model_single,
                     img_summary=self.ARCH["train"]["save_scans"],
                 )
-            
-            if number_of_gpus >= 2:
-                dist.barrier()
+            # # dist.barrier()
         print("Finished Training")
         return
 
-    def train_epoch(self, train_loader, model, all_criterion, optimizer, epoch, all_evaluator, scheduler, report=10):
+    def train_epoch(
+        self,
+        train_loader,
+        model,
+        all_criterion,
+        optimizer,
+        epoch,
+        all_evaluator,
+        scheduler,
+        report=10,
+    ):
+        # Range Moving
         moving_losses_meter = AverageMeter()
         moving_acc_meter = AverageMeter()
         moving_iou_meter = AverageMeter()
+
+        # Range Movable
+        movable_losses_meter = AverageMeter()
+        movable_acc_meter = AverageMeter()
+        movable_iou_meter = AverageMeter()
+
+        # BEV Moving
         bev_moving_losses_meter = AverageMeter()
         bev_moving_acc_meter = AverageMeter()
         bev_moving_iou_meter = AverageMeter()
+
+        # BEV Movable
+        bev_movable_losses_meter = AverageMeter()
+        bev_movable_acc_meter = AverageMeter()
+        bev_movable_iou_meter = AverageMeter()
+
+        # Final Moving
         final_moving_losses_meter = AverageMeter()
         final_moving_acc_meter = AverageMeter()
         final_moving_iou_meter = AverageMeter()
+
+        # ETC.
         losses_meter = AverageMeter()
         hetero_l_meter = AverageMeter()
         update_ratio_meter = AverageMeter()
 
-        range_evaluator, _, bev_evaluator, _, final_evaluator = all_evaluator
-        criterion, _ = all_criterion
+        (
+            range_evaluator,
+            range_movable_evaluator,
+            bev_evaluator,
+            bev_movable_evaluator,
+            final_evaluator,
+        ) = all_evaluator
+        criterion, movable_criterion = all_criterion
 
         model.train()
         end = time.time()
 
         for i, (
-            (GTs_moving, _),
+            (points, (GTs_moving, GTs_movable)),
             (proj_full, bev_full),
-            (proj_labels, _),
-            (bev_labels, _),
+            (proj_labels, proj_movable_labels),
+            (bev_labels, bev_movable_labels),
             (proj_x, proj_y),
             (bev_proj_x, bev_proj_y),
-            (path_seq, path_name, npoints),
+            (path_seq, path_name),
         ) in enumerate(train_loader):
             self.data_time_t.update(time.time() - end)
-
             if self.gpu:
-                GTs_moving = GTs_moving.cuda(non_blocking=True)
+                points = points.cuda(non_blocking=True)
                 proj_full = proj_full.cuda(non_blocking=True)
                 bev_full = bev_full.cuda(non_blocking=True)
                 proj_labels = proj_labels.cuda(non_blocking=True).long()
+                proj_movable_labels = proj_movable_labels.cuda(
+                    non_blocking=True).long()
                 bev_labels = bev_labels.cuda(non_blocking=True).long()
+                bev_movable_labels = bev_movable_labels.cuda(
+                    non_blocking=True).long()
                 proj_x = proj_x.cuda(non_blocking=True)
                 proj_y = proj_y.cuda(non_blocking=True)
                 bev_proj_x = bev_proj_x.cuda(non_blocking=True)
                 bev_proj_y = bev_proj_y.cuda(non_blocking=True)
+                GTs_moving = GTs_moving.cuda(non_blocking=True)
+                GTs_movable = GTs_movable.cuda(non_blocking=True)
 
             # softmax 거쳤으므로 0-1 범위.
-            moving, bev_moving = model(proj_full, bev_full)
-            bs = npoints.shape[0]
+            r_moving, r_movable, b_moving, b_movable = model(
+                proj_full, bev_full)
 
-            """"""""""""""""""""""""""""""""""""
-            """   모든것을 batch 단위 간주   """
-            """"""""""""""""""""""""""""""""""""
-            all_moving, all_bev_moving, all_final_moving, all_GTs_moving = [], [], [], []
-            for b in range(bs):
-                n = npoints[b]  
-                moving_single = moving[b] # (3, h, w)
-                bev_moving_single = bev_moving[b] # (3, h_bev, w_bev)
-                proj_y_single = proj_y[b][:n] # (#points, )
-                proj_x_single = proj_x[b][:n] # (#points, )
-                bev_proj_y_single = bev_proj_y[b][:n] # (#points, )
-                bev_proj_x_single = bev_proj_x[b][:n] # (#points, )
-                GTs_moving_single = GTs_moving[b][:n] # (#points, )
+            """모든것을 batch 해제"""
+            """이 아래부터는 배치가 1임을 가정하고 배치를 해제합니다."""
+            points = points[0]
+            npoints = points.shape[0]
+            proj_full, bev_full = proj_full[0], bev_full[0]
+            proj_labels, proj_movable_labels = proj_labels[0], proj_movable_labels[0]
+            bev_labels, bev_movable_labels = bev_labels[0], bev_movable_labels[0]
+            proj_x, proj_y = proj_x[0], proj_y[0]
+            bev_proj_x, bev_proj_y = bev_proj_x[0], bev_proj_y[0]
+            GTs_moving, GTs_movable = GTs_moving[0], GTs_movable[0]
+            r_moving, r_movable = r_moving[0], r_movable[0]
+            b_moving, b_movable = b_moving[0], b_movable[0]
 
-                moving_single = moving_single[:, proj_y_single, proj_x_single] # (3, #points)
-                bev_moving_single = bev_moving_single[:, bev_proj_y_single, bev_proj_x_single] # (3, #points)
-                final_moving_single = (moving_single + bev_moving_single) / 2  # (3, #points)
+            # (n, 3)
+            # (1, ) =: n
+            # (13, h, w), (13, h_bev, w_bev)
+            # h, w
+            # h_bev, w_bev
+            # (150000, ), (150000, )
+            # (150000, ), (150000, )
+            # (n, ), (n, )
+            # (3, h, w), (3, h, w)
+            # (3, h_bev, w_bev), (3, h_bev, w_bev)
 
-                all_moving.append(moving_single)
-                all_bev_moving.append(bev_moving_single)
-                all_final_moving.append(final_moving_single)
-                all_GTs_moving.append(GTs_moving_single)
+            ##############################################
+            proj_x = proj_x[:npoints]  # (n, )
+            proj_y = proj_y[:npoints]  # (n, )
+            bev_proj_x = bev_proj_x[:npoints]  # (n, )
+            bev_proj_y = bev_proj_y[:npoints]  # (n, )
 
-            moving = torch.cat(all_moving, dim=1) # (3, sum(npoints))      
-            bev_moving = torch.cat(all_bev_moving, dim=1)  # (3, sum(npoints))     
-            final_moving = torch.cat(all_final_moving, dim=1)  # (3, sum(npoints))
-            GTs_moving = torch.cat(all_GTs_moving, dim=0)  # (sum(npoints), )
+            # 3차원 공간에서 점별 클래스 확률
+            moving = r_moving[:, proj_y, proj_x]  # (3, n)
+            movable = r_movable[:, proj_y, proj_x]  # (3, n)
+            bev_moving = b_moving[:, bev_proj_y, bev_proj_x]  # (3, n)
+            bev_movable = b_movable[:, bev_proj_y, bev_proj_x]  # (3, n)
+            final_moving = (moving + bev_moving) / 2  # (3, n)
 
-            l_moving, pred_moving, _ = loss_and_pred(moving, GTs_moving, criterion, self.ls)
-            l_bev_moving, pred_bev_moving, _ = loss_and_pred(bev_moving, GTs_moving, criterion, self.ls)
-            l_final_moving, pred_final_moving, _ = loss_and_pred(final_moving, GTs_moving, criterion, self.ls)
+            ##############################################
 
-            """Loss 정의부"""
-            alpha, beta, gamma = 0.25, 0.25, 0.5
-            loss = (alpha * l_moving) + (beta * l_bev_moving) + (gamma * l_final_moving)
+            log_moving = torch.log(moving.clamp(min=1e-8))
+            log_movable = torch.log(movable.clamp(min=1e-8))
+            log_bev_moving = torch.log(bev_moving.clamp(min=1e-8))
+            log_bev_movable = torch.log(bev_movable.clamp(min=1e-8))
+            log_final_moving = torch.log(final_moving.clamp(min=1e-8))
+
+            l_moving, pred_moving, _ = loss_and_pred(
+                moving, log_moving, GTs_moving, criterion, self.ls)
+            l_movable, pred_movable, _ = loss_and_pred(
+                movable, log_movable, GTs_movable, movable_criterion, self.ls)
+            l_bev_moving, pred_bev_moving, _ = loss_and_pred(
+                bev_moving, log_bev_moving, GTs_moving, criterion, self.ls)
+            l_bev_movable, pred_bev_movable, _ = loss_and_pred(
+                bev_movable, log_bev_movable, GTs_movable, movable_criterion, self.ls)
+            l_final_moving, pred_final_moving, _ = loss_and_pred(
+                final_moving, log_final_moving, GTs_moving, criterion, self.ls)
+
+            l_range = l_moving + l_movable
+            l_bev = l_bev_moving + l_bev_movable
+            loss = l_range + l_bev + l_final_moving
 
             optimizer.zero_grad()
             loss.backward()
@@ -473,25 +578,48 @@ class Trainer:
                 range_evaluator.addBatch(pred_moving, GTs_moving)
                 range_acc = range_evaluator.getacc()
                 range_jaccard, _ = range_evaluator.getIoU()
+
+                range_movable_evaluator.reset()
+                range_movable_evaluator.addBatch(pred_movable, GTs_movable)
+                range_movable_acc = range_movable_evaluator.getacc()
+                range_movable_jaccard, _ = range_movable_evaluator.getIoU()
+
+                # BEV 평가: b_moving과 b_movable 결과 평가 후 평균 처리
                 bev_evaluator.reset()
                 bev_evaluator.addBatch(pred_bev_moving, GTs_moving)
                 bev_acc = bev_evaluator.getacc()
                 bev_jaccard, _ = bev_evaluator.getIoU()
+
+                bev_movable_evaluator.reset()
+                bev_movable_evaluator.addBatch(pred_bev_movable, GTs_movable)
+                bev_movable_acc = bev_movable_evaluator.getacc()
+                bev_movable_jaccard, _ = bev_movable_evaluator.getIoU()
+
+                # Final 평가: final_preds와 GTs_moving 비교
                 final_evaluator.reset()
                 final_evaluator.addBatch(pred_final_moving, GTs_moving)
                 final_acc = final_evaluator.getacc()
                 final_jaccard, _ = final_evaluator.getIoU()
 
-            losses_meter.update(mean_loss.item(), bs)
-            moving_losses_meter.update(l_moving.mean().item(), bs)
-            moving_acc_meter.update(range_acc.item(), bs)
-            moving_iou_meter.update(range_jaccard.item(), bs)
-            bev_moving_losses_meter.update(l_bev_moving.mean().item(), bs)
-            bev_moving_acc_meter.update(bev_acc.item(), bs)
-            bev_moving_iou_meter.update(bev_jaccard.item(), bs)
-            final_moving_losses_meter.update(l_final_moving.mean().item(), bs)
-            final_moving_acc_meter.update(final_acc.item(), bs)
-            final_moving_iou_meter.update(final_jaccard.item(), bs)
+            losses_meter.update(mean_loss.item())
+
+            moving_losses_meter.update(l_moving.mean().item())
+            movable_losses_meter.update(l_movable.mean().item())
+            moving_acc_meter.update(range_acc.item())
+            moving_iou_meter.update(range_jaccard.item())
+            movable_acc_meter.update(range_movable_acc.item())
+            movable_iou_meter.update(range_movable_jaccard.item())
+
+            bev_moving_losses_meter.update(l_bev_moving.mean().item())
+            bev_movable_losses_meter.update(l_bev_movable.mean().item())
+            bev_moving_acc_meter.update(bev_acc.item())
+            bev_moving_iou_meter.update(bev_jaccard.item())
+            bev_movable_acc_meter.update(bev_movable_acc.item())
+            bev_movable_iou_meter.update(bev_movable_jaccard.item())
+
+            final_moving_losses_meter.update(l_final_moving.mean().item())
+            final_moving_acc_meter.update(final_acc.item())
+            final_moving_iou_meter.update(final_jaccard.item())
 
             # measure elapsed time
             self.batch_time_t.update(time.time() - end)
@@ -502,6 +630,7 @@ class Trainer:
                 lr = group["lr"]
                 for param in group["params"]:
                     if param.grad is not None:
+                        # 파라미터와 gradient의 L2 norm을 GPU에서 직접 계산합니다.
                         w = param.data.norm(p=2)
                         grad_norm = (lr * param.grad).norm(p=2)
                         ratios.append(grad_norm / (w + 1e-10))
@@ -516,14 +645,24 @@ class Trainer:
             # 일정 배치마다 로그 출력
             if i % report == 0 and self.local_rank == 0:
                 str_line = (
+                    "Lr: {lr:.3e} | "
+                    "Update: {umean:.3e} mean,{ustd:.3e} std | "
                     "Epoch: [{0}][{1}/{2}] | "
+                    "Time {batch_time.val:.3f} ({batch_time.avg:.3f}) | "
+                    "Data {data_time.val:.3f} ({data_time.avg:.3f}) | "
                     "Overall-Loss {loss.val:.4f} ({loss.avg:.4f}) | "
                     "MovingLoss {moving_losses.val:.4f} ({moving_losses.avg:.4f}) | "
+                    "MovableLoss {movable_losses.val:.4f} ({movable_losses.avg:.4f}) | "
                     "MovingAcc {moving_acc.val:.3f} ({moving_acc.avg:.3f}) | "
                     "MovingIoU {moving_iou.val:.3f} ({moving_iou.avg:.3f}) | "
+                    "Movable_acc {movable_acc.val:.3f} ({movable_acc.avg:.3f}) | "
+                    "Movable_IoU {movable_iou.val:.3f} ({movable_iou.avg:.3f}) | "
                     "BEV_MovingLoss {bev_moving_losses.val:.4f} ({bev_moving_losses.avg:.4f}) | "
+                    "BEV_MovableLoss {bev_movable_losses.val:.4f} ({bev_movable_losses.avg:.4f}) | "
                     "BEV_MovingAcc {bev_moving_acc.val:.3f} ({bev_moving_acc.avg:.3f}) | "
                     "BEV_MovingIoU {bev_moving_iou.val:.3f} ({bev_moving_iou.avg:.3f}) | "
+                    "BEV_Movable_acc {bev_movable_acc.val:.3f} ({bev_movable_acc.avg:.3f}) | "
+                    "BEV_Movable_IoU {bev_movable_iou.val:.3f} ({bev_movable_iou.avg:.3f}) | "
                     "Final_MovingLoss {final_moving_losses.val:.4f} ({final_moving_losses.avg:.4f}) | "
                     "Final_MovingAcc {final_moving_acc.val:.3f} ({final_moving_acc.avg:.3f}) | "
                     "Final_MovingIoU {final_moving_iou.val:.3f} ({final_moving_iou.avg:.3f}) | "
@@ -533,16 +672,28 @@ class Trainer:
                     i,
                     len(train_loader),
                     #############################
+                    lr=lr,
+                    umean=update_mean,
+                    ustd=update_std,
+                    batch_time=self.batch_time_t,
+                    data_time=self.data_time_t,
                     loss=losses_meter,
                     moving_losses=moving_losses_meter,
+                    movable_losses=movable_losses_meter,
                     moving_acc=moving_acc_meter,
                     moving_iou=moving_iou_meter,
+                    movable_acc=movable_acc_meter,
+                    movable_iou=movable_iou_meter,
                     bev_moving_losses=bev_moving_losses_meter,
+                    bev_movable_losses=bev_movable_losses_meter,
                     bev_moving_acc=bev_moving_acc_meter,
                     bev_moving_iou=bev_moving_iou_meter,
+                    bev_movable_acc=bev_movable_acc_meter,
+                    bev_movable_iou=bev_movable_iou_meter,
                     final_moving_losses=final_moving_losses_meter,
                     final_moving_acc=final_moving_acc_meter,
                     final_moving_iou=final_moving_iou_meter,
+
                     estim=self.calculate_estimate(epoch, i),
                 )
                 print("*" * 80)
@@ -563,128 +714,214 @@ class Trainer:
             hetero_l_meter.avg,
         )
 
-    def validate(self, val_loader, model, all_criterion, all_evaluator, class_func):
+    def validate(
+        self,
+        val_loader,
+        model,
+        all_criterion,
+        all_evaluator,
+        class_func,
+    ):
         losses_meter = AverageMeter()
+
         moving_losses_meter = AverageMeter()
+        movable_losses_meter = AverageMeter()
         bev_moving_losses_meter = AverageMeter()
+        bev_movable_losses_meter = AverageMeter()
         final_moving_losses_meter = AverageMeter()
+
         jaccs_meter = AverageMeter()
         wces_meter = AverageMeter()
         acc_meter = AverageMeter()
         iou_meter = AverageMeter()
+
         bev_jaccs_meter = AverageMeter()
         bev_wces_meter = AverageMeter()
         bev_acc_meter = AverageMeter()
         bev_iou_meter = AverageMeter()
+
         final_jaccs_meter = AverageMeter()
         final_wces_meter = AverageMeter()
         final_acc_meter = AverageMeter()
         final_iou_meter = AverageMeter()
+
+        movable_jaccs_meter = AverageMeter()
+        movable_wces_meter = AverageMeter()
+        movable_acc_meter = AverageMeter()
+        movable_iou_meter = AverageMeter()
+
+        bev_movable_jaccs_meter = AverageMeter()
+        bev_movable_wces_meter = AverageMeter()
+        bev_movable_acc_meter = AverageMeter()
+        bev_movable_iou_meter = AverageMeter()
+
         hetero_l_meter = AverageMeter()
 
         # evaluators와 criterion unpack
-        range_evaluator, _, bev_evaluator, _, final_evaluator = all_evaluator
-        criterion, _ = all_criterion
+        (
+            range_evaluator,
+            range_movable_evaluator,
+            bev_evaluator,
+            bev_movable_evaluator,
+            final_evaluator,
+        ) = all_evaluator
+        criterion, movable_criterion = all_criterion
 
         # 평가 모드 전환 및 evaluator 초기화
         model.eval()
         range_evaluator.reset()
+        range_movable_evaluator.reset()
         bev_evaluator.reset()
+        bev_movable_evaluator.reset()
         final_evaluator.reset()
 
         with torch.no_grad():
             end = time.time()
             for i, (
-                (GTs_moving, _),
+                (points, (GTs_moving, GTs_movable)),
                 (proj_full, bev_full),
-                (proj_labels, _),
-                (bev_labels, _),
+                (proj_labels, proj_movable_labels),
+                (bev_labels, bev_movable_labels),
                 (proj_x, proj_y),
                 (bev_proj_x, bev_proj_y),
-                (path_seq, path_name, npoints),
+                (path_seq, path_name),
             ) in enumerate(tqdm(val_loader, desc="Validation:", ncols=80)):
+
+                # GPU로 데이터 이동
                 if self.gpu:
-                    GTs_moving = GTs_moving.cuda(non_blocking=True)
+                    points = points.cuda(non_blocking=True)
                     proj_full = proj_full.cuda(non_blocking=True)
                     bev_full = bev_full.cuda(non_blocking=True)
                     proj_labels = proj_labels.cuda(non_blocking=True).long()
+                    proj_movable_labels = proj_movable_labels.cuda(
+                        non_blocking=True
+                    ).long()
                     bev_labels = bev_labels.cuda(non_blocking=True).long()
+                    bev_movable_labels = bev_movable_labels.cuda(
+                        non_blocking=True
+                    ).long()
                     proj_x = proj_x.cuda(non_blocking=True)
                     proj_y = proj_y.cuda(non_blocking=True)
                     bev_proj_x = bev_proj_x.cuda(non_blocking=True)
                     bev_proj_y = bev_proj_y.cuda(non_blocking=True)
+                    GTs_moving = GTs_moving.cuda(non_blocking=True)
+                    GTs_movable = GTs_movable.cuda(non_blocking=True)
 
-                
                 # softmax 거쳤으므로 0-1 범위.
-                moving, bev_moving = model(proj_full, bev_full)
-                bs = npoints.shape[0]
+                r_moving, r_movable, b_moving, b_movable = model(
+                    proj_full, bev_full)
 
-                """"""""""""""""""""""""""""""""""""
-                """   모든것을 batch 단위 간주   """
-                """"""""""""""""""""""""""""""""""""
-                all_moving, all_bev_moving, all_final_moving, all_GTs_moving = [], [], [], []
-                for b in range(bs):
-                    n = npoints[b]  
-                    moving_single = moving[b] # (3, h, w)
-                    bev_moving_single = bev_moving[b] # (3, h_bev, w_bev)
-                    proj_y_single = proj_y[b][:n] # (#points, )
-                    proj_x_single = proj_x[b][:n] # (#points, )
-                    bev_proj_y_single = bev_proj_y[b][:n] # (#points, )
-                    bev_proj_x_single = bev_proj_x[b][:n] # (#points, )
-                    GTs_moving_single = GTs_moving[b][:n] # (#points, )
+                """모든것을 batch 해제"""
+                """이 아래부터는 배치가 1임을 가정하고 배치를 해제합니다."""
+                points = points[0]
+                npoints = points.shape[0]
+                proj_full, bev_full = proj_full[0], bev_full[0]
+                proj_labels, proj_movable_labels = proj_labels[0], proj_movable_labels[0]
+                bev_labels, bev_movable_labels = bev_labels[0], bev_movable_labels[0]
+                proj_x, proj_y = proj_x[0], proj_y[0]
+                bev_proj_x, bev_proj_y = bev_proj_x[0], bev_proj_y[0]
+                GTs_moving, GTs_movable = GTs_moving[0], GTs_movable[0]
+                r_moving, r_movable = r_moving[0], r_movable[0]
+                b_moving, b_movable = b_moving[0], b_movable[0]
 
-                    moving_single = moving_single[:, proj_y_single, proj_x_single] # (3, #points)
-                    bev_moving_single = bev_moving_single[:, bev_proj_y_single, bev_proj_x_single] # (3, #points)
-                    final_moving_single = (moving_single + bev_moving_single) / 2  # (3, #points)
+                # (n, 3)
+                # (1, ) =: n
+                # (13, h, w), (13, h_bev, w_bev)
+                # h, w
+                # h_bev, w_bev
+                # (150000, ), (150000, )
+                # (150000, ), (150000, )
+                # (n, ), (n, )
+                # (3, h, w), (3, h, w)
+                # (3, h_bev, w_bev), (3, h_bev, w_bev)
 
-                    all_moving.append(moving_single)
-                    all_bev_moving.append(bev_moving_single)
-                    all_final_moving.append(final_moving_single)
-                    all_GTs_moving.append(GTs_moving_single)
+                ##############################################
+                proj_x = proj_x[:npoints]  # (n, )
+                proj_y = proj_y[:npoints]  # (n, )
+                bev_proj_x = bev_proj_x[:npoints]  # (n, )
+                bev_proj_y = bev_proj_y[:npoints]  # (n, )
 
-                moving = torch.cat(all_moving, dim=1) # (3, sum(npoints))      
-                bev_moving = torch.cat(all_bev_moving, dim=1)  # (3, sum(npoints))     
-                final_moving = torch.cat(all_final_moving, dim=1)  # (3, sum(npoints))
-                GTs_moving = torch.cat(all_GTs_moving, dim=0)  # (sum(npoints), )
+                # 3차원 공간에서 점별 클래스 확률
+                moving = r_moving[:, proj_y, proj_x]  # (3, n)
+                movable = r_movable[:, proj_y, proj_x]  # (3, n)
+                bev_moving = b_moving[:, bev_proj_y, bev_proj_x]  # (3, n)
+                bev_movable = b_movable[:, bev_proj_y, bev_proj_x]  # (3, n)
+                final_moving = (moving + bev_moving) / 2  # (3, n)
 
-                l_moving, pred_moving, (jacc, wce) = loss_and_pred(moving, GTs_moving, criterion, self.ls)
-                l_bev_moving, pred_bev_moving, (bev_jacc, bev_wce) = loss_and_pred(bev_moving, GTs_moving, criterion, self.ls)
-                l_final_moving, pred_final_moving, (final_jacc, final_wce) = loss_and_pred(final_moving, GTs_moving, criterion, self.ls)
+                ##############################################
 
-                """Loss 정의부"""
-                alpha, beta, gamma = 0.25, 0.25, 0.5
-                loss = (alpha * l_moving) + (beta * l_bev_moving) + (gamma * l_final_moving)
+                log_moving = torch.log(moving.clamp(min=1e-8))
+                log_movable = torch.log(movable.clamp(min=1e-8))
+                log_bev_moving = torch.log(bev_moving.clamp(min=1e-8))
+                log_bev_movable = torch.log(bev_movable.clamp(min=1e-8))
+                log_final_moving = torch.log(final_moving.clamp(min=1e-8))
+
+                l_moving, pred_moving, (jacc, wce) = loss_and_pred(
+                    moving, log_moving, GTs_moving, criterion, self.ls)
+                l_movable, pred_movable, (movable_jacc, movable_wce) = loss_and_pred(
+                    movable, log_movable, GTs_movable, movable_criterion, self.ls)
+                l_bev_moving, pred_bev_moving, (bev_jacc, bev_wce) = loss_and_pred(
+                    bev_moving, log_bev_moving, GTs_moving, criterion, self.ls)
+                l_bev_movable, pred_bev_movable, (bev_movable_jacc, bev_movable_wce) = loss_and_pred(
+                    bev_movable, log_bev_movable, GTs_movable, movable_criterion, self.ls)
+                l_final_moving, pred_final_moving, (final_jacc, final_wce) = loss_and_pred(
+                    final_moving, log_final_moving, GTs_moving, criterion, self.ls)
+
+                l_range = l_moving + l_movable
+                l_bev = l_bev_moving + l_bev_movable
+                loss = l_range + l_bev + l_final_moving
 
                 range_evaluator.addBatch(pred_moving, GTs_moving)
+                range_movable_evaluator.addBatch(pred_movable, GTs_movable)
                 bev_evaluator.addBatch(pred_bev_moving, GTs_moving)
+                bev_movable_evaluator.addBatch(pred_bev_movable, GTs_movable)
                 final_evaluator.addBatch(pred_final_moving, GTs_moving)
 
-                losses_meter.update(loss.mean().item(), bs)
-                moving_losses_meter.update(l_moving.mean().item(), bs)
-                jaccs_meter.update(jacc.mean().item(), bs)
-                wces_meter.update(wce.mean().item(), bs)
-                bev_moving_losses_meter.update(l_bev_moving.mean().item(), bs)
-                bev_jaccs_meter.update(bev_jacc.mean().item(), bs)
-                bev_wces_meter.update(bev_wce.mean().item(), bs)
-                final_moving_losses_meter.update(l_final_moving.mean().item(), bs)
-                final_jaccs_meter.update(final_jacc.mean().item(), bs)
-                final_wces_meter.update(final_wce.mean().item(), bs)
+                losses_meter.update(loss.mean().item())
+
+                moving_losses_meter.update(l_moving.mean().item())
+                jaccs_meter.update(jacc.mean().item())
+                wces_meter.update(wce.mean().item())
+                movable_losses_meter.update(l_movable.mean().item())
+                movable_jaccs_meter.update(movable_jacc.mean().item())
+                movable_wces_meter.update(movable_wce.mean().item())
+
+                bev_moving_losses_meter.update(l_bev_moving.mean().item())
+                bev_jaccs_meter.update(bev_jacc.mean().item())
+                bev_wces_meter.update(bev_wce.mean().item())
+                bev_movable_losses_meter.update(l_bev_movable.mean().item())
+                bev_movable_jaccs_meter.update(bev_movable_jacc.mean().item())
+                bev_movable_wces_meter.update(bev_movable_wce.mean().item())
+
+                final_moving_losses_meter.update(l_final_moving.mean().item())
+                final_jaccs_meter.update(final_jacc.mean().item())
+                final_wces_meter.update(final_wce.mean().item())
 
                 self.batch_time_e.update(time.time() - end)
                 end = time.time()
 
             accuracy = range_evaluator.getacc()
             jaccard, class_jaccard = range_evaluator.getIoU()
-            acc_meter.update(accuracy.item(), bs)
-            iou_meter.update(jaccard.item(), bs)
+            movable_accuracy = range_movable_evaluator.getacc()
+            movable_jaccard, movable_class_jaccard = range_movable_evaluator.getIoU()
+            acc_meter.update(accuracy.item())
+            iou_meter.update(jaccard.item())
+            movable_acc_meter.update(movable_accuracy.item())
+            movable_iou_meter.update(movable_jaccard.item())
+
             bev_accuracy = bev_evaluator.getacc()
             bev_jaccard, bev_class_jaccard = bev_evaluator.getIoU()
-            bev_acc_meter.update(bev_accuracy.item(), bs)
-            bev_iou_meter.update(bev_jaccard.item(), bs)
+            bev_movable_accuracy = bev_movable_evaluator.getacc()
+            bev_movable_jaccard, bev_movable_class_jaccard = bev_movable_evaluator.getIoU()
+            bev_acc_meter.update(bev_accuracy.item())
+            bev_iou_meter.update(bev_jaccard.item())
+            bev_movable_acc_meter.update(bev_movable_accuracy.item())
+            bev_movable_iou_meter.update(bev_movable_jaccard.item())
+
             final_accuracy = final_evaluator.getacc()
             final_jaccard, final_class_jaccard = final_evaluator.getIoU()
-            final_acc_meter.update(final_accuracy.item(), bs)
-            final_iou_meter.update(final_jaccard.item(), bs)
+            final_acc_meter.update(final_accuracy.item())
+            final_iou_meter.update(final_jaccard.item())
 
             str_line = (
                 "*" * 80 + "\n"
@@ -692,15 +929,25 @@ class Trainer:
                 "Time avg per batch {batch_time.avg:.3f}\n"
                 "Loss avg {loss.avg:.4f}\n"
                 "MovingLoss avg {moving_loss.avg:.4f}\n"
+                "MovableLoss avg {movable_loss.avg:.4f}\n"
                 "MovingJaccard avg {moving_jac.avg:.4f}\n"
                 "MovingWCE avg {moving_wces.avg:.4f}\n"
                 "MovingAcc avg {moving_acc.avg:.6f}\n"
                 "MovingIoU avg {moving_iou.avg:.6f}\n"
+                "MovableJaccard avg {movable_jac.avg:.4f}\n"
+                "MovableWCE avg {movable_wce.avg:.4f}\n"
+                "MovableAcc avg {movable_acc.avg:.6f}\n"
+                "MovableIoU avg {movable_iou.avg:.6f}\n"
                 "BEV_MovingLoss avg {bev_moving_loss.avg:.4f}\n"
+                "BEV_MovableLoss avg {bev_movable_loss.avg:.4f}\n"
                 "BEV_MovingJaccard avg {bev_moving_jac.avg:.4f}\n"
                 "BEV_MovingWCE avg {bev_moving_wces.avg:.4f}\n"
                 "BEV_MovingAcc avg {bev_moving_acc.avg:.6f}\n"
                 "BEV_MovingIoU avg {bev_moving_iou.avg:.6f}\n"
+                "BEV_MovableJaccard avg {bev_movable_jac.avg:.4f}\n"
+                "BEV_MovableWCE avg {bev_movable_wce.avg:.4f}\n"
+                "BEV_MovableAcc avg {bev_movable_acc.avg:.6f}\n"
+                "BEV_MovableIoU avg {bev_movable_iou.avg:.6f}\n"
                 "Final_MovingLoss avg {final_moving_loss.avg:.4f}\n"
                 "Final_MovingJaccard avg {final_moving_jac.avg:.4f}\n"
                 "Final_MovingWCE avg {final_moving_wces.avg:.4f}\n"
@@ -710,15 +957,25 @@ class Trainer:
                 batch_time=self.batch_time_e,
                 loss=losses_meter,
                 moving_loss=moving_losses_meter,
+                movable_loss=movable_losses_meter,
                 moving_jac=jaccs_meter,
                 moving_wces=wces_meter,
                 moving_acc=acc_meter,
                 moving_iou=iou_meter,
+                movable_jac=movable_jaccs_meter,
+                movable_wce=movable_wces_meter,
+                movable_acc=movable_acc_meter,
+                movable_iou=movable_iou_meter,
                 bev_moving_loss=bev_moving_losses_meter,
+                bev_movable_loss=bev_movable_losses_meter,
                 bev_moving_jac=bev_jaccs_meter,
                 bev_moving_wces=bev_wces_meter,
                 bev_moving_acc=bev_acc_meter,
                 bev_moving_iou=bev_iou_meter,
+                bev_movable_jac=bev_movable_jaccs_meter,
+                bev_movable_wce=bev_movable_wces_meter,
+                bev_movable_acc=bev_movable_acc_meter,
+                bev_movable_iou=bev_movable_iou_meter,
                 final_moving_loss=final_moving_losses_meter,
                 final_moving_jac=final_jaccs_meter,
                 final_moving_wces=final_wces_meter,
@@ -731,8 +988,6 @@ class Trainer:
             print("-" * 80)
             # print also classwise
             for i, jacc in enumerate(class_jaccard):
-                if i == 0:
-                    continue
                 self.info["valid_classes/" + class_func(i)] = jacc
                 str_line = "Range IoU class {i:} [{class_str:}] = {jacc:.6f}".format(
                     i=i, class_str=class_func(i), jacc=jacc
@@ -740,6 +995,15 @@ class Trainer:
                 print(str_line)
                 save_to_txtlog(self.logdir, "log.txt", str_line)
 
+            print("-" * 80)
+            for i, jacc in enumerate(movable_class_jaccard):
+                self.info["valid_classes/" +
+                          class_func(i, movable=True)] = jacc
+                str_line = "Range IoU class {i:} [{class_str:}] = {jacc:.6f}".format(
+                    i=i, class_str=class_func(i, movable=True), jacc=jacc
+                )
+                print(str_line)
+                save_to_txtlog(self.logdir, "log.txt", str_line)
 
             print("-" * 80)
             # print also classwise
@@ -753,6 +1017,17 @@ class Trainer:
                 print(str_line)
                 save_to_txtlog(self.logdir, "log.txt", str_line)
 
+            print("-" * 80)
+            for i, jacc in enumerate(bev_movable_class_jaccard):
+                if i == 0:
+                    continue
+                self.info["valid_classes/" +
+                          class_func(i, movable=True)] = jacc
+                str_line = "BEV IoU class {i:} [{class_str:}] = {jacc:.6f}".format(
+                    i=i, class_str=class_func(i, movable=True), jacc=jacc
+                )
+                print(str_line)
+                save_to_txtlog(self.logdir, "log.txt", str_line)
 
             print("-" * 80)
             # print also classwise
@@ -781,7 +1056,19 @@ class Trainer:
             hetero_l_meter.avg,
         )
 
-    def update_training_info(self, epoch, overall_loss, range_acc, range_iou, bev_acc, bev_iou, final_acc, final_iou, update_ratio, hetero_l):
+    def update_training_info(
+        self,
+        epoch,
+        overall_loss,
+        range_acc,
+        range_iou,
+        bev_acc,
+        bev_iou,
+        final_acc,
+        final_iou,
+        update_ratio,
+        hetero_l,
+    ):
         self.info["train_loss"] = overall_loss
         self.info["train_range_acc"] = range_acc
         self.info["train_range_iou"] = range_iou
@@ -822,7 +1109,18 @@ class Trainer:
             save_checkpoint(state, self.logdir,
                             suffix=f"_train_final_best")
 
-    def update_validation_info(self, epoch, overall_loss, range_acc, range_iou, bev_acc, bev_iou, final_acc, final_iou, hetero_l):
+    def update_validation_info(
+        self,
+        epoch,
+        overall_loss,
+        range_acc,
+        range_iou,
+        bev_acc,
+        bev_iou,
+        final_acc,
+        final_iou,
+        hetero_l,
+    ):
         """
         검증 과정에서 range/BEV/final 각각의 loss/acc/IoU를 받아 self.info에 기록하고,
         best 기록을 갱신하며 체크포인트를 저장합니다.

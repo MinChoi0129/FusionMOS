@@ -1,288 +1,232 @@
 import numpy as np
-import torch
-
-# 매핑 딕셔너리 (moving, movable)
-moving_learning_map = {
-    0: 0,
-    1: 0,
-    9: 1,
-    10: 1,
-    11: 1,
-    13: 1,
-    15: 1,
-    16: 1,
-    18: 1,
-    20: 1,
-    30: 1,
-    31: 1,
-    32: 1,
-    40: 1,
-    44: 1,
-    48: 1,
-    49: 1,
-    50: 1,
-    51: 1,
-    52: 1,
-    60: 1,
-    70: 1,
-    71: 1,
-    72: 1,
-    80: 1,
-    81: 1,
-    99: 1,
-    251: 2,
-    252: 2,
-    253: 2,
-    254: 2,
-    255: 2,
-    256: 2,
-    257: 2,
-    258: 2,
-    259: 2,
-}
-movable_learning_map = {
-    0: 0,
-    1: 0,
-    9: 1,
-    16: 1,
-    40: 1,
-    44: 1,
-    48: 1,
-    49: 1,
-    50: 1,
-    51: 1,
-    52: 1,
-    60: 1,
-    70: 1,
-    71: 1,
-    72: 1,
-    80: 1,
-    81: 1,
-    99: 1,
-    10: 2,
-    11: 2,
-    13: 2,
-    15: 2,
-    18: 2,
-    20: 2,
-    30: 2,
-    31: 2,
-    32: 2,
-    251: 2,
-    252: 2,
-    253: 2,
-    254: 2,
-    255: 2,
-    256: 2,
-    257: 2,
-    258: 2,
-    259: 2,
-}
-
-
-def load_scan_with_remission(scan_path):
-    """
-    KITTI .bin 파일에서 3D 포인트와 remission을 읽어옴.
-    반환: homo_points (n×4, homogeneous), remissions (n,)
-    """
-    scan = np.fromfile(scan_path, dtype=np.float32).reshape((-1, 4))
-    points = scan[:, :3]
-    remissions = scan[:, 3]
-    homo_points = np.ones((points.shape[0], 4), dtype=np.float32)
-    homo_points[:, :3] = points
-    return homo_points, remissions
-
-
-def load_label(label_path):
-    """
-    .label 파일에서 semantic 라벨과 instance 라벨을 읽어옴.
-    반환: sem_label (n,), inst_label (n,)
-    """
-    label = np.fromfile(label_path, dtype=np.int32)
-    sem_label = label & 0xFFFF
-    inst_label = label >> 16
-    return sem_label, inst_label
-
-
-def bev_projection_full(
-    homo_points, remissions, proj_H, proj_W, max_range=50.0, min_range=2.0
-):
-    """
-    입력:
-      homo_points: n×4 (x, y, z, 1)
-      remissions: n, float
-    출력:
-      bev_range: (proj_H, proj_W) 각 픽셀의 XY 평면 거리 (없으면 -1)
-      bev_xyz:   (proj_H, proj_W, 3) 각 픽셀에 매핑된 (x, y, z) 좌표 (없으면 -1)
-      bev_remission: (proj_H, proj_W) 각 픽셀의 remission 값 (없으면 -1)
-      bev_proj_x:  유효 포인트들의 x 픽셀 좌표 (1D 배열)
-      bev_proj_y:  유효 포인트들의 y 픽셀 좌표 (1D 배열)
-      bev_unproj_range: 유효 포인트들의 원본 XY 거리 값 (1D 배열)
-      bev_proj_idx: 각 픽셀에 대응하는 원본 점의 인덱스 (-1: no data)
-    """
-    xy_dist = np.sqrt(homo_points[:, 0] ** 2 + homo_points[:, 1] ** 2)
-    valid_mask = (xy_dist > min_range) & (xy_dist < max_range)
-    filtered_points = homo_points[valid_mask]
-    filtered_rem = remissions[valid_mask]
-    filtered_dist = xy_dist[valid_mask]
-    orig_idx = np.nonzero(valid_mask)[0]  # 원본 점 인덱스
-
-    if filtered_points.shape[0] == 0:
-        empty = np.full((proj_H, proj_W), -1, dtype=np.float32)
-        return (
-            empty,
-            np.full((proj_H, proj_W, 3), -1, dtype=np.float32),
-            empty,
-            np.array([]),
-            np.array([]),
-            np.array([]),
-            np.full((proj_H, proj_W), -1, dtype=np.int32),
-        )
-
-    # x, y 좌표를 [0,1]로 정규화 후 이미지 크기에 맞게 변환
-    x_img = (filtered_points[:, 0] + max_range) / (2.0 * max_range)
-    y_img = (filtered_points[:, 1] + max_range) / (2.0 * max_range)
-    x_img = np.clip(np.floor(x_img * proj_W), 0, proj_W - 1).astype(np.int32)
-    y_img = np.clip(np.floor(y_img * proj_H), 0, proj_H - 1).astype(np.int32)
-
-    # 먼 점부터 투영 (덮어쓰기를 위해)
-    order = np.argsort(filtered_dist)[::-1]
-    x_img = x_img[order]
-    y_img = y_img[order]
-    filtered_dist = filtered_dist[order]
-    filtered_points = filtered_points[order]
-    filtered_rem = filtered_rem[order]
-    proj_idx_ordered = orig_idx[order]
-
-    bev_range = np.full((proj_H, proj_W), -1, dtype=np.float32)
-    bev_xyz = np.full((proj_H, proj_W, 3), -1, dtype=np.float32)
-    bev_remission = np.full((proj_H, proj_W), -1, dtype=np.float32)
-    proj_idx = np.full((proj_H, proj_W), -1, dtype=np.int32)
-
-    bev_range[y_img, x_img] = filtered_dist
-    bev_xyz[y_img, x_img, :] = filtered_points[:, :3]
-    bev_remission[y_img, x_img] = filtered_rem
-    proj_idx[y_img, x_img] = proj_idx_ordered
-
-    return bev_range, bev_xyz, bev_remission, x_img, y_img, filtered_dist, proj_idx
-
-
-def create_ternary_label(bev_label, mapping_dict):
-    """
-    bev_label: BEV label 이미지 (2D, -1이면 empty)
-    mapping_dict: 예) moving_learning_map 또는 movable_learning_map
-    반환: 삼진 이미지: 빈 공간은 0, 그 외에는 mapping된 값 (예: static=1, moving=2)
-    """
-    mapped = np.full_like(bev_label, -1, dtype=np.int32)
-    unique = np.unique(bev_label)
-    for val in unique:
-        if val in mapping_dict:
-            mapped[bev_label == val] = mapping_dict[val]
-        else:
-            mapped[bev_label == val] = 0
-    ternary = np.where(bev_label == -1, 0, mapped)
-    return ternary
-
-
-def process_scan_as_bev(velodyne_path, label_path):
-    proj_H, proj_W = 768, 768
-    max_range = 50.0
-    min_range = 2.0
-
-    bev_scan = BevScan(proj_H, proj_W, max_range, min_range)
-    (
-        bev_range_img,
-        bev_xyz,
-        bev_remission,
-        bev_proj_x,
-        bev_proj_y,
-        bev_unproj_range,
-        bev_sem_label,
-    ) = bev_scan.process(velodyne_path, label_path)
-
-    # 정규화: range와 remission 채널
-    norm_range = np.clip(bev_range_img, 0, max_range) / max_range
-    if np.any(bev_remission > 0):
-        norm_rem = np.clip(
-            bev_remission, 0, np.max(bev_remission[bev_remission > 0])
-        ) / np.max(bev_remission[bev_remission > 0])
-    else:
-        norm_rem = bev_remission
-
-    bev_moving_ternary = create_ternary_label(bev_sem_label, moving_learning_map)
-    bev_movable_ternary = create_ternary_label(bev_sem_label, movable_learning_map)
-
-    bev_composite = np.concatenate(
-        [
-            norm_range[np.newaxis, ...],
-            bev_xyz.transpose(2, 0, 1),
-            norm_rem[np.newaxis, ...],
-            bev_moving_ternary[np.newaxis, ...],
-            bev_movable_ternary[np.newaxis, ...],
-        ],
-        axis=0,
-    )
-
-    unproj_n_points = bev_proj_x.shape[0]
-    tmp_x = torch.full([150000], -1, dtype=torch.long)
-    tmp_x[:unproj_n_points] = torch.from_numpy(bev_proj_x)
-    tmp_y = torch.full([150000], -1, dtype=torch.long)
-    tmp_y[:unproj_n_points] = torch.from_numpy(bev_proj_y)
-    tmp_unproj_range = torch.full([150000], -1.0, dtype=torch.float)
-    tmp_unproj_range[:unproj_n_points] = torch.from_numpy(bev_unproj_range)
-
-    return {
-        "bev_composite": bev_composite,
-        "bev_proj_x": tmp_x.cpu().numpy(),
-        "bev_proj_y": tmp_y.cpu().numpy(),
-        "bev_unproj_range": tmp_unproj_range.cpu().numpy(),
-    }
-
 
 class BevScan:
-    """
-    BEV Scan 클래스:
-      - velodyne 스캔과 라벨 파일을 받아 BEV 투영을 수행하여,
-        bev_range, bev_xyz, bev_remission, bev_sem_label과 함께
-        bev_proj_x, bev_proj_y, bev_unproj_range, bev_proj_idx도 생성.
-    """
+    moving_learning_map = {
+        0: 0,
+        1: 0,
+        9: 1,
+        10: 1,
+        11: 1,
+        13: 1,
+        15: 1,
+        16: 1,
+        18: 1,
+        20: 1,
+        30: 1,
+        31: 1,
+        32: 1,
+        40: 1,
+        44: 1,
+        48: 1,
+        49: 1,
+        50: 1,
+        51: 1,
+        52: 1,
+        60: 1,
+        70: 1,
+        71: 1,
+        72: 1,
+        80: 1,
+        81: 1,
+        99: 1,
+        251: 2,
+        252: 2,
+        253: 2,
+        254: 2,
+        255: 2,
+        256: 2,
+        257: 2,
+        258: 2,
+        259: 2,
+    }
+    movable_learning_map = {
+        0: 0,
+        1: 0,
+        9: 1,
+        16: 1,
+        40: 1,
+        44: 1,
+        48: 1,
+        49: 1,
+        50: 1,
+        51: 1,
+        52: 1,
+        60: 1,
+        70: 1,
+        71: 1,
+        72: 1,
+        80: 1,
+        81: 1,
+        99: 1,
+        10: 2,
+        11: 2,
+        13: 2,
+        15: 2,
+        18: 2,
+        20: 2,
+        30: 2,
+        31: 2,
+        32: 2,
+        251: 2,
+        252: 2,
+        253: 2,
+        254: 2,
+        255: 2,
+        256: 2,
+        257: 2,
+        258: 2,
+        259: 2,
+    }
 
-    def __init__(self, proj_H, proj_W, max_range=50.0, min_range=2.0):
+    def __init__(self, velodyne_path, label_path, proj_H, proj_W, max_range, min_range):
+        self.velodyne_path = velodyne_path
+        self.label_path = label_path
         self.proj_H = proj_H
         self.proj_W = proj_W
         self.max_range = max_range
         self.min_range = min_range
+        self.process()
+    
+    def load_velodyne(self):
+        scan = np.fromfile(self.velodyne_path, dtype=np.float32).reshape((-1, 4)) # nx4
+        points = scan[:, :3] # nx3
+        remissions = scan[:, 3] # nx1
+        homo_points = np.ones((points.shape[0], 4), dtype=np.float32) # nx4
+        homo_points[:, :3] = points # nx4 (XYZ1, XYZ1, XYZ1, ... , XYZ1)
 
-    def process(self, scan_path, label_path):
-        homo_points, remissions = load_scan_with_remission(scan_path)
-        sem_label, _ = load_label(label_path)
-        (
-            self.bev_range,
-            self.bev_xyz,
-            self.bev_remission,
-            self.bev_proj_x,
-            self.bev_proj_y,
-            self.bev_unproj_range,
-            self.bev_proj_idx,
-        ) = bev_projection_full(
-            homo_points,
-            remissions,
-            proj_H=self.proj_H,
-            proj_W=self.proj_W,
-            max_range=self.max_range,
-            min_range=self.min_range,
-        )
+        self.homo_points = homo_points
+        self.remissions = remissions
+        return self.homo_points, self.remissions
+    
+    def load_label(self):
+        """
+        .label 파일에서 semantic 라벨과 instance 라벨을 읽어옴.
+        반환: sem_label (n,), inst_label (n,)
+        """
+        label = np.fromfile(self.label_path, dtype=np.int32)
+        self.sem_label = label & 0xFFFF
+        self.inst_label = label >> 16
+        return self.sem_label, self.inst_label
 
-        # LaserScan 방식 label 채우기: proj_idx를 이용
+    def create_ternary_label(self, mapping_dict):
+        mapped = np.full_like(self.bev_sem_label, -1, dtype=np.int32)
+        unique = np.unique(self.bev_sem_label)
+        for val in unique:
+            if val in mapping_dict:
+                mapped[self.bev_sem_label == val] = mapping_dict[val]
+            else:
+                mapped[self.bev_sem_label == val] = 0
+        ternary = np.where(self.bev_sem_label == -1, 0, mapped)
+        return ternary
+    
+    @staticmethod
+    def bev_projection_only(homo_points, proj_H, proj_W, max_range, min_range):
+        xy_dist = np.sqrt(homo_points[:, 0] ** 2 + homo_points[:, 1] ** 2)
+        valid_mask = (xy_dist > min_range) & (xy_dist < max_range)
+        filtered_points = homo_points[valid_mask]
+        filtered_dist = xy_dist[valid_mask]
+
+        x_img = (filtered_points[:, 0] + max_range) / (2.0 * max_range)
+        y_img = (filtered_points[:, 1] + max_range) / (2.0 * max_range)
+        x_img = np.clip(np.floor(x_img * proj_W), 0, proj_W - 1).astype(np.int32)
+        y_img = np.clip(np.floor(y_img * proj_H), 0, proj_H - 1).astype(np.int32)
+
+        # 먼 점부터 투영 (덮어쓰기를 위해)
+        order = np.argsort(filtered_dist)[::-1]
+        x_img = x_img[order]
+        y_img = y_img[order]
+        filtered_dist = filtered_dist[order]
+
+        bev_range = np.full((proj_H, proj_W), 0, dtype=np.float32)
+        bev_range[y_img, x_img] = 1
+
+        return bev_range
+
+    def bev_projection_full(self):
+        xy_dist = np.sqrt(self.homo_points[:, 0] ** 2 + self.homo_points[:, 1] ** 2)
+        valid_mask = (xy_dist > self.min_range) & (xy_dist < self.max_range)
+        filtered_points = self.homo_points[valid_mask]
+        filtered_rem = self.remissions[valid_mask]
+        filtered_dist = xy_dist[valid_mask]
+        orig_idx = np.nonzero(valid_mask)[0]  # 원본 점 인덱스
+
+        if filtered_points.shape[0] == 0:
+            empty = np.full((self.proj_H, self.proj_W), -1, dtype=np.float32)
+            return (
+                empty,
+                np.full((self.proj_H, self.proj_W, 3), -1, dtype=np.float32),
+                empty,
+                np.array([]),
+                np.array([]),
+                np.array([]),
+                np.full((self.proj_H, self.proj_W), -1, dtype=np.int32),
+            )
+
+        # x, y 좌표를 [0,1]로 정규화 후 이미지 크기에 맞게 변환
+        x_img = (filtered_points[:, 0] + self.max_range) / (2.0 * self.max_range)
+        y_img = (filtered_points[:, 1] + self.max_range) / (2.0 * self.max_range)
+        x_img = np.clip(np.floor(x_img * self.proj_W), 0, self.proj_W - 1).astype(np.int32)
+        y_img = np.clip(np.floor(y_img * self.proj_H), 0, self.proj_H - 1).astype(np.int32)
+
+        # 먼 점부터 투영 (덮어쓰기를 위해)
+        order = np.argsort(filtered_dist)[::-1]
+        x_img = x_img[order]
+        y_img = y_img[order]
+        filtered_dist = filtered_dist[order]
+        filtered_points = filtered_points[order]
+        filtered_rem = filtered_rem[order]
+        proj_idx_ordered = orig_idx[order]
+
+        bev_range = np.full((self.proj_H, self.proj_W), 0, dtype=np.float32)
+        bev_xyz = np.full((self.proj_H, self.proj_W, 3), -1, dtype=np.float32)
+        bev_remission = np.full((self.proj_H, self.proj_W), -1, dtype=np.float32)
+        proj_idx = np.full((self.proj_H, self.proj_W), -1, dtype=np.int32)
+
+        bev_range[y_img, x_img] = 1
+        bev_xyz[y_img, x_img, :] = filtered_points[:, :3]
+        bev_remission[y_img, x_img] = filtered_rem
+        proj_idx[y_img, x_img] = proj_idx_ordered
+
+
+        # 정규화: range와 remission 채널
+        # norm_range = np.clip(bev_range, 0, self.max_range) / self.max_range
+        if np.any(bev_remission > 0):
+            norm_rem = np.clip(
+                bev_remission, 0, np.max(bev_remission[bev_remission > 0])
+            ) / np.max(bev_remission[bev_remission > 0])
+        else:
+            norm_rem = bev_remission
+
+        unproj_n_points = x_img.shape[0]
+        tmp_x = np.full(150000, -1, dtype=np.longlong)
+        tmp_x[:unproj_n_points] = x_img
+        tmp_y = np.full(150000, -1, dtype=np.longlong)
+        tmp_y[:unproj_n_points] = y_img
+        tmp_unproj_range = np.full(150000, -1.0, dtype=np.float32)
+        tmp_unproj_range[:unproj_n_points] = filtered_dist
+            
+        self.bev_range = bev_range
+        self.bev_xyz = bev_xyz.transpose((2, 0, 1))  # HWC -> CHW
+        self.bev_remission = norm_rem
+        self.bev_proj_x = tmp_x
+        self.bev_proj_y = tmp_y
+        self.bev_unproj_range = tmp_unproj_range
+        self.bev_proj_idx = proj_idx
+    
+        # return self.bev_range, self.bev_xyz, self.bev_remission, self.bev_proj_x, self.bev_proj_y, self.bev_unproj_range, self.bev_proj_idx
+    
+    def bev_labels_full(self):
         self.bev_sem_label = np.full((self.proj_H, self.proj_W), -1, dtype=np.int32)
         valid = self.bev_proj_idx >= 0
-        self.bev_sem_label[valid] = sem_label[self.bev_proj_idx[valid]]
-        return (
-            self.bev_range,
-            self.bev_xyz,
-            self.bev_remission,
-            self.bev_proj_x,
-            self.bev_proj_y,
-            self.bev_unproj_range,
-            self.bev_sem_label,
-        )
+        self.bev_sem_label[valid] = self.sem_label[self.bev_proj_idx[valid]]
+
+        self.bev_moving_ternary_label = self.create_ternary_label(BevScan.moving_learning_map)
+        self.bev_movable_ternary_label = self.create_ternary_label(BevScan.movable_learning_map)
+
+        # return self.bev_sem_label, self.bev_moving_ternary_label, self.bev_movable_ternary_label
+
+    def process(self):
+        self.load_velodyne()
+        self.load_label()
+        self.bev_projection_full()
+        self.bev_labels_full()

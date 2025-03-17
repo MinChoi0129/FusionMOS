@@ -58,25 +58,43 @@ class MFMOS(nn.Module):
             coord_channels=self.range_channel,
         )
 
-        self.resBlock1 = ResBlock(32, 64, 0.2, pooling=True, drop_out=False, kernel_size=(2, 4))
-        self.resBlock2 = ResBlock(64, 128, 0.2, pooling=True, kernel_size=(2, 4))
-        self.resBlock3 = ResBlock(128, 256, 0.2, pooling=True, kernel_size=(2, 4))
-        self.resBlock4 = ResBlock(256, 256, 0.2, pooling=True, kernel_size=(2, 4))
-        self.resBlock5 = ResBlock(256, 256, 0.2, pooling=False, kernel_size=(2, 4))
+        self.resBlock1 = ResBlock(
+            32, 64, 0.2, pooling=True, drop_out=False, kernel_size=(2, 4)
+        )
+        self.resBlock2 = ResBlock(
+            64, 128, 0.2, pooling=True, kernel_size=(2, 4))
+        self.resBlock3 = ResBlock(
+            128, 256, 0.2, pooling=True, kernel_size=(2, 4))
+        self.resBlock4 = ResBlock(
+            256, 256, 0.2, pooling=True, kernel_size=(2, 4))
+        self.resBlock5 = ResBlock(
+            256, 256, 0.2, pooling=False, kernel_size=(2, 4))
 
         self.upBlock1 = UpBlock(256, 128, 0.2)
         self.upBlock2 = UpBlock(128, 128, 0.2)
         self.upBlock3 = UpBlock(128, 64, 0.2)
         self.upBlock4 = UpBlock(64, 32, 0.2, drop_out=False)
 
+        self.range_upBlock1 = UpBlock(256, 128, 0.2)
+        self.range_upBlock2 = UpBlock(128, 64, 0.2)
+        self.range_upBlock3 = UpBlock(64, 32, 0.2)
+
         self.RI_downCntx = ResContextBlock(self.n_input_scans, 32)
-        self.RI_resBlock1 = ResBlock(32, 64, 0.2, pooling=True, drop_out=False, kernel_size=(2, 4))
-        self.RI_resBlock2 = ResBlock(64, 128, 0.2, pooling=True, kernel_size=(2, 4))
-        self.RI_resBlock3 = ResBlock(128, 256, 0.2, pooling=True, kernel_size=(2, 4))
-        self.RI_resBlock4 = ResBlock(256, 256, 0.2, pooling=True, kernel_size=(2, 4))
+        self.RI_resBlock1 = ResBlock(
+            32, 64, 0.2, pooling=True, drop_out=False, kernel_size=(2, 4)
+        )
+        self.RI_resBlock2 = ResBlock(
+            64, 128, 0.2, pooling=True, kernel_size=(2, 4))
+        self.RI_resBlock3 = ResBlock(
+            128, 256, 0.2, pooling=True, kernel_size=(2, 4))
+        self.RI_resBlock4 = ResBlock(
+            256, 256, 0.2, pooling=True, kernel_size=(2, 4))
+        self.RI_resBlock5 = ResBlock(
+            256, 512, 0.2, pooling=False, kernel_size=(2, 4))
 
         self.logits3 = nn.Conv2d(32, nclasses, kernel_size=(1, 1))
-        self.movable_logits = nn.Conv2d(32, movable_nclasses, kernel_size=(1, 1))
+        self.movable_logits = nn.Conv2d(
+            32, movable_nclasses, kernel_size=(1, 1))
 
         # ---------------------------
         # BEV Branch 설정
@@ -91,22 +109,46 @@ class MFMOS(nn.Module):
             coord_channels=self.bev_channel,
         )
 
-        self.bev_resBlock1 = ResBlockBEV(32, 64, 0.2, pooling=True, drop_out=False, kernel_size=(2, 2))
-        self.bev_resBlock2 = ResBlockBEV(64, 128, 0.2, pooling=True, kernel_size=(2, 2))
-        self.bev_resBlock3 = ResBlockBEV(128, 256, 0.2, pooling=True, kernel_size=(2, 2))
-        self.bev_resBlock4 = ResBlockBEV(256, 256, 0.2, pooling=True, kernel_size=(2, 2))
-        self.bev_resBlock5 = ResBlockBEV(256, 256, 0.2, pooling=False, kernel_size=(2, 2))
+        self.bev_resBlock1 = ResBlockBEV(
+            32, 64, 0.2, pooling=True, drop_out=False, kernel_size=(2, 2)
+        )
+        self.bev_resBlock2 = ResBlockBEV(
+            64, 128, 0.2, pooling=True, kernel_size=(2, 2))
+        self.bev_resBlock3 = ResBlockBEV(
+            128, 256, 0.2, pooling=True, kernel_size=(2, 2)
+        )
+        self.bev_resBlock4 = ResBlockBEV(
+            256, 256, 0.2, pooling=True, kernel_size=(2, 2)
+        )
+        self.bev_resBlock5 = ResBlockBEV(
+            256, 256, 0.2, pooling=False, kernel_size=(2, 2)
+        )
 
         self.bev_upBlock1 = UpBlockBEV(256, 128, 0.2)
         self.bev_upBlock2 = UpBlockBEV(128, 128, 0.2)
         self.bev_upBlock3 = UpBlockBEV(128, 64, 0.2)
         self.bev_upBlock4 = UpBlockBEV(64, 32, 0.2, drop_out=False)
 
+        self.birdeyeview_upBlock1 = UpBlockBEV(256, 128, 0.2)
+        self.birdeyeview_upBlock2 = UpBlockBEV(128, 64, 0.2)
+        self.birdeyeview_upBlock3 = UpBlockBEV(64, 32, 0.2)
+
         self.bev_RI_downCntx = ResContextBlock(self.n_input_scans, 32)
-        self.bev_RI_resBlock1 = ResBlockBEV(32, 64, 0.2, pooling=True, drop_out=False, kernel_size=(2, 2))
-        self.bev_RI_resBlock2 = ResBlockBEV(64, 128, 0.2, pooling=True, kernel_size=(2, 2))
-        self.bev_RI_resBlock3 = ResBlockBEV(128, 256, 0.2, pooling=True, kernel_size=(2, 2))
-        self.bev_RI_resBlock4 = ResBlockBEV(256, 256, 0.2, pooling=True, kernel_size=(2, 2))
+        self.bev_RI_resBlock1 = ResBlockBEV(
+            32, 64, 0.2, pooling=True, drop_out=False, kernel_size=(2, 2)
+        )
+        self.bev_RI_resBlock2 = ResBlockBEV(
+            64, 128, 0.2, pooling=True, kernel_size=(2, 2)
+        )
+        self.bev_RI_resBlock3 = ResBlockBEV(
+            128, 256, 0.2, pooling=True, kernel_size=(2, 2)
+        )
+        self.bev_RI_resBlock4 = ResBlockBEV(
+            256, 256, 0.2, pooling=True, kernel_size=(2, 2)
+        )
+        self.bev_RI_resBlock5 = ResBlockBEV(
+            256, 512, 0.2, pooling=False, kernel_size=(2, 2)
+        )
 
         self.bev_logits3 = nn.Conv2d(32, nclasses, kernel_size=(1, 1))
         self.bev_movable_logits = nn.Conv2d(
@@ -323,6 +365,13 @@ class MFMOS(nn.Module):
         logits = self.logits3(up1e)
         range_probs = F.softmax(logits, dim=1)
 
+        range_up4e = self.range_upBlock1(Range_down3b, Range_down2b)
+        range_up3e = self.range_upBlock2(range_up4e, Range_down1b)
+        range_up2e = self.range_upBlock3(range_up3e, Range_down0b)
+
+        movable_logits = self.movable_logits(range_up2e)
+        range_movable_probs = F.softmax(movable_logits, dim=1)
+
         # ---------------------------
         # BEV Branch Decoder
         # ---------------------------
@@ -334,10 +383,17 @@ class MFMOS(nn.Module):
         bev_logits = self.bev_logits3(bev_up1e)
         bev_probs = F.softmax(bev_logits, dim=1)
 
+        bev_up4e = self.birdeyeview_upBlock1(
+            BirdEyeView_down3b, BirdEyeView_down2b)
+        bev_up3e = self.birdeyeview_upBlock2(bev_up4e, BirdEyeView_down1b)
+        bev_up2e = self.birdeyeview_upBlock3(bev_up3e, BirdEyeView_down0b)
+
+        bev_movable_logits = self.bev_movable_logits(bev_up2e)
+        bev_movable_probs = F.softmax(bev_movable_logits, dim=1)
 
         # 최종 출력: Range와 BEV 각각의 Moving, Movable 로짓
-        # [B, 3, 64, 2048], [B, 3, 384, 384]
-        return range_probs, bev_probs
+        # [B, 3, 64, 2048], [B, 3, 64, 2048], [B, 3, 384, 384], [B, 3, 384, 384]
+        return range_probs, range_movable_probs, bev_probs, bev_movable_probs
 
 
 if __name__ == "__main__":
@@ -345,7 +401,7 @@ if __name__ == "__main__":
     params = {
         "train": {
             "n_input_scans": 8,  # residual 스캔 개수
-            "batch_size": 3,
+            "batch_size": 2,
         },
     }
     nclasses = 3
@@ -369,8 +425,12 @@ if __name__ == "__main__":
         x_bev = x_bev.cuda()
 
     # 추론
-    range_logits, bev_logits = model(x_range, x_bev)
+    range_logits, range_movable_logits, bev_logits, bev_movable_logits = model(
+        x_range, x_bev
+    )
 
     # 출력 형태 확인
     print("Range logits shape:", range_logits.shape)
+    print("Range movable logits shape:", range_movable_logits.shape)
     print("BEV logits shape:", bev_logits.shape)
+    print("BEV movable logits shape:", bev_movable_logits.shape)

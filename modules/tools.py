@@ -84,7 +84,8 @@ def make_log_img(depth, mask, pred, gt, color_fn, movable=False):
         )
         * 255.0
     ).astype(np.uint8)
-    out_img = cv2.applyColorMap(depth, get_mpl_colormap("viridis")) * mask[..., None]
+    out_img = cv2.applyColorMap(
+        depth, get_mpl_colormap("viridis")) * mask[..., None]
     # make label prediction
     pred_color = color_fn((pred * mask).astype(np.int32), movable=movable)
     out_img = np.concatenate([out_img, pred_color], axis=0)
@@ -102,13 +103,15 @@ def show_scans_in_training(
     depth_np = in_vol[0][0].cpu().numpy()
     pred_np = argmax[0].cpu().numpy()
     gt_np = proj_labels[0].cpu().numpy()
-    out = make_log_img(depth_np, mask_np, pred_np, gt_np, color_fn, movable=movable)
+    out = make_log_img(depth_np, mask_np, pred_np,
+                       gt_np, color_fn, movable=movable)
 
     mask_np = proj_mask[1].cpu().numpy()
     depth_np = in_vol[1][0].cpu().numpy()
     pred_np = argmax[1].cpu().numpy()
     gt_np = proj_labels[1].cpu().numpy()
-    out2 = make_log_img(depth_np, mask_np, pred_np, gt_np, color_fn, movable=movable)
+    out2 = make_log_img(depth_np, mask_np, pred_np,
+                        gt_np, color_fn, movable=movable)
 
     out = np.concatenate([out, out2], axis=0)
 
@@ -140,19 +143,8 @@ class iouEval:
         self.last_scan_size = None  # for when variable scan size is used
 
     def addBatch(self, x, y):  # x=preds, y=targets
-        # if numpy, pass to pytorch
-        # to tensor
-        if isinstance(x, np.ndarray):
-            x = torch.from_numpy(np.array(x)).long().to(self.device)
-        if isinstance(y, np.ndarray):
-            y = torch.from_numpy(np.array(y)).long().to(self.device)
-
-        # sizes should be "batch_size x H x W"
-        x_row = x.reshape(-1)  # de-batchify
-        y_row = y.reshape(-1)  # de-batchify
-
         # idxs are labels and predictions
-        idxs = torch.stack([x_row, y_row], dim=0)
+        idxs = torch.stack([x, y], dim=0)
 
         # ones is what I want to add to conf when I
         if self.ones is None or self.last_scan_size != idxs.shape[-1]:

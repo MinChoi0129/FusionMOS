@@ -31,24 +31,15 @@ if __name__ == "__main__":
     check_model_dir(FLAGS.model)  # does model folder exist?
 
     # create user and infer dataset
-    if not FLAGS.pointrefine:
-        user = User(
-            ARCH,
-            DATA,
-            datadir=FLAGS.dataset,
-            outputdir=FLAGS.log,
-            modeldir=FLAGS.model,
-            split=FLAGS.split,
-            save_movable=FLAGS.movable,
-        )
-    else:
-        user = UserRefine(
-            ARCH,
-            DATA,
-            datadir=FLAGS.dataset,
-            outputdir=FLAGS.log,
-            modeldir=FLAGS.model,
-            split=FLAGS.split,
-            save_movable=FLAGS.movable,
-        )
+
+    user = User(
+        ARCH,
+        DATA,
+        datadir=FLAGS.dataset,
+        outputdir=FLAGS.log,
+        modeldir=FLAGS.model,
+        split=FLAGS.split,
+        save_movable=FLAGS.movable,
+    )
+
     user.infer()

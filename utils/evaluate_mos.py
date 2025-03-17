@@ -171,7 +171,8 @@ if __name__ == "__main__":
     lidar_names = []
     for sequence in test_sequences:
         sequence = "{0:02d}".format(int(sequence))
-        label_paths = os.path.join(FLAGS.dataset, "sequences", str(sequence), "labels")
+        label_paths = os.path.join(
+            FLAGS.dataset, "sequences", str(sequence), "labels")
         # populate the label names
         seq_label_names = [
             os.path.join(dp, f)
@@ -222,7 +223,8 @@ if __name__ == "__main__":
     assert len(label_names) == len(pred_names)
     if FLAGS.radius != -1:
         print("lidars: ", len(lidar_names))
-        print(f"\033[32m Only use the points in radius <= {FLAGS.radius}m. \033[0m")
+        print(
+            f"\033[32m Only use the points in radius <= {FLAGS.radius}m. \033[0m")
 
     # open each file, get the tensor, and make the iou comparison
     # for lidar_file, label_file, pred_file in zip(lidar_names[:], label_names[:], pred_names[:]):
@@ -282,9 +284,11 @@ if __name__ == "__main__":
     for i, jacc in enumerate(class_jaccard):
         if i not in ignore:
             if int(class_inv_remap[i]) == 9:
-                sys.stdout.write("iou_static: {jacc:.6f}\n".format(jacc=jacc.item()))
+                sys.stdout.write(
+                    "iou_static: {jacc:.6f}\n".format(jacc=jacc.item()))
             if int(class_inv_remap[i]) > 250:
-                sys.stdout.write("iou_moving: {jacc:.6f}".format(jacc=jacc.item()))
+                sys.stdout.write(
+                    "iou_moving: {jacc:.6f}".format(jacc=jacc.item()))
     sys.stdout.write("\n")
     sys.stdout.flush()
 

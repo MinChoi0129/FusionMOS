@@ -14,8 +14,8 @@ export CUDA_VISIBLE_DEVICES="0"  # 단일 GPU 설정
 python ./train.py --dataset "$DatasetPath" \
                   --arch_cfg "$ArchConfig" \
                   --data_cfg "$DataConfig" \
-                  --log "$LogPath"
-                  # --pretrained "/home/work_docker/MF-MOS/log/Train/2025-2-18-05:09"
+                  --log "$LogPath" 
+                #   --pretrained "/home/work/MF-MOS/log/Train/2025-3-10-06:21"
 
 
 # #!/bin/bash

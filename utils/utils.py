@@ -25,10 +25,12 @@ def millify(n, precision=0, drop_nulls=True, prefixes=[]):
     millidx = max(
         0,
         min(
-            len(millnames) - 1, int(math.floor(0 if n == 0 else math.log10(abs(n)) / 3))
+            len(millnames) -
+            1, int(math.floor(0 if n == 0 else math.log10(abs(n)) / 3))
         ),
     )
-    result = "{:.{precision}f}".format(n / 10 ** (3 * millidx), precision=precision)
+    result = "{:.{precision}f}".format(
+        n / 10 ** (3 * millidx), precision=precision)
     if drop_nulls:
         result = remove_exponent(Decimal(result))
     return "{0}{dx}".format(result, dx=millnames[millidx])
@@ -48,7 +50,6 @@ def str2bool(v):
 def load_yaml(path):
     try:
         print(f"\033[32m Opening arch config file {path}\033[0m")
-        print("path:", path)
         yaml_data = yaml.safe_load(open(path, "r"))
         return yaml_data
     except Exception as e:
@@ -65,7 +66,8 @@ def check_and_makedirs(dir_path):
 def check_pretrained_dir(path):
     if path is not None:
         if os.path.isdir(path):
-            print("\033[32m model folder exists! Using model from %s \033[0m" % (path))
+            print(
+                "\033[32m model folder exists! Using model from %s \033[0m" % (path))
         else:
             print(
                 "\033[32m model folder doesnt exist! Start with random weights...\033[0m"
@@ -77,7 +79,8 @@ def check_pretrained_dir(path):
 def check_model_dir(path):
     if path is not None:
         if os.path.isdir(path):
-            print("\033[32m model folder exists! Using model from %s \033[0m" % (path))
+            print(
+                "\033[32m model folder exists! Using model from %s \033[0m" % (path))
         else:
             print("\033[32m model folder doesnt exist! Can't infer...\033[0m")
             quit()
@@ -174,13 +177,21 @@ def make_predictions_dir(FLAGS, DATA, rm_old=False, save_movable=False):
         for seq in DATA["split"][FLAGS.split]:
             seq = "{0:02d}".format(int(seq))
             print(f"{FLAGS.split} : {seq}")
-            check_and_makedirs(os.path.join(FLAGS.log, "sequences", seq, "predictions"))
+            # check_and_makedirs(os.path.join(FLAGS.log, "sequences", seq, "predictions"))
+            check_and_makedirs(os.path.join(
+                FLAGS.log, "sequences", seq, "predictions_moving"))
+            check_and_makedirs(os.path.join(
+                FLAGS.log, "sequences", seq, "predictions_bev_moving"))
+            check_and_makedirs(os.path.join(
+                FLAGS.log, "sequences", seq, "predictions_final_moving"))
             if save_movable:
                 check_and_makedirs(
-                    os.path.join(FLAGS.log, "sequences", seq, "predictions_fuse")
+                    os.path.join(FLAGS.log, "sequences",
+                                 seq, "predictions_fuse")
                 )
                 check_and_makedirs(
-                    os.path.join(FLAGS.log, "sequences", seq, "predictions_movable")
+                    os.path.join(FLAGS.log, "sequences",
+                                 seq, "predictions_movable")
                 )
 
     except Exception as e:
