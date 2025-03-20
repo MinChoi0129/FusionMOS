@@ -249,6 +249,7 @@ class MetaKernel(nn.Module):
         :param kernel_size: int
         :return: rel_coord: num_batch, num_channel_in, kernel_size * kernel_size, H, W
         """
+
         sample_reshape = torch.reshape(
             sample_coord,
             shape=(

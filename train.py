@@ -11,11 +11,11 @@ import torch
 from utils.utils import *
 
 number_of_gpus = torch.cuda.device_count()
-print("device count: ", number_of_gpus)
+# print("device count: ", number_of_gpus)
 
 if number_of_gpus >= 2:
     dist.init_process_group(backend="nccl")
-    print("world_size: ", dist.get_world_size())
+    # print("world_size: ", dist.get_world_size())
 
 # from modules.SalsaNextWithMotionAttention import *
 
@@ -46,7 +46,7 @@ if __name__ == "__main__":
         local_rank = int(os.environ["LOCAL_RANK"])
 
     torch.cuda.set_device(local_rank)
-    print(f"Local Rank {local_rank}를 설정합니다.")
+    # print(f"Local Rank {local_rank}를 설정합니다.")
 
     FLAGS.log = os.path.join(FLAGS.log, datetime.now().strftime("%Y-%-m-%d-%H:%M") + FLAGS.name)
 

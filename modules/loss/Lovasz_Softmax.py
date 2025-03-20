@@ -121,8 +121,7 @@ def lovasz_softmax_flat(probas, labels, classes="present"):
         errors_sorted, perm = torch.sort(errors, 0, descending=True)
         perm = perm.data
         fg_sorted = fg[perm]
-        losses.append(
-            torch.dot(errors_sorted, Variable(lovasz_grad(fg_sorted))))
+        losses.append(torch.dot(errors_sorted, Variable(lovasz_grad(fg_sorted))))
     return mean(losses)
 
 
@@ -135,8 +134,7 @@ def flatten_probas(probas, labels, ignore=None):
         B, H, W = probas.size()
         probas = probas.view(B, 1, H, W)
     B, C, H, W = probas.size()
-    probas = probas.permute(0, 2, 3, 1).contiguous(
-    ).view(-1, C)  # B * H * W, C = P, C
+    probas = probas.permute(0, 2, 3, 1).contiguous().view(-1, C)  # B * H * W, C = P, C
     labels = labels.view(-1)
     if ignore is None:
         return probas, labels
@@ -167,7 +165,7 @@ class Lovasz_softmax_PointCloud(nn.Module):
 
     def forward(self, probas, labels):
         C, concat_N = probas.size()
-        probas = probas.T # (concat_N, 3)
+        probas = probas.T  # (concat_N, 3)
         # labels는 유지 : (concat_N, )
         if self.ignore is not None:
             valid = labels != self.ignore

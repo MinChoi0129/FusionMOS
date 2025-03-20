@@ -49,7 +49,7 @@ def str2bool(v):
 
 def load_yaml(path):
     try:
-        print(f"\033[32m Opening arch config file {path}\033[0m")
+        # print(f"\033[32m Opening arch config file {path}\033[0m")
         yaml_data = yaml.safe_load(open(path, "r"))
         return yaml_data
     except Exception as e:
@@ -125,7 +125,7 @@ def backup_to_logdir(FLAGS, pretrain_model=False):
     # copy all files to log folder (to remember what we did, and make inference
     # easier). Also, standardize name to be able to open it later
     try:
-        print("Copying files to %s for further reference." % FLAGS.log)
+        # print("Copying files to %s for further reference." % FLAGS.log)
         shutil.copyfile(FLAGS.arch_cfg, FLAGS.log + "/arch_cfg.yaml")
         shutil.copyfile(FLAGS.data_cfg, FLAGS.log + "/data_cfg.yaml")
 
@@ -179,20 +179,9 @@ def make_predictions_dir(FLAGS, DATA, rm_old=False, save_movable=False):
             print(f"{FLAGS.split} : {seq}")
             # check_and_makedirs(os.path.join(FLAGS.log, "sequences", seq, "predictions"))
             check_and_makedirs(os.path.join(
-                FLAGS.log, "sequences", seq, "predictions_moving"))
+                FLAGS.log, "sequences", seq, "predictions"))
             check_and_makedirs(os.path.join(
-                FLAGS.log, "sequences", seq, "predictions_bev_moving"))
-            check_and_makedirs(os.path.join(
-                FLAGS.log, "sequences", seq, "predictions_final_moving"))
-            if save_movable:
-                check_and_makedirs(
-                    os.path.join(FLAGS.log, "sequences",
-                                 seq, "predictions_fuse")
-                )
-                check_and_makedirs(
-                    os.path.join(FLAGS.log, "sequences",
-                                 seq, "predictions_movable")
-                )
+                FLAGS.log, "sequences", seq, "predictions_movable"))
 
     except Exception as e:
         print(e)

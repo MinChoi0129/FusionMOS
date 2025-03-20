@@ -18,10 +18,12 @@ from modules.KNN import KNN
 # from modules.SalsaNextWithMotionAttention import *
 from modules.MFMOS import *
 
-from modules.PointRefine.spvcnn import SPVCNN
+# from modules.PointRefine.spvcnn import SPVCNN
 
 # from modules.PointRefine.spvcnn_lite import SPVCNN
 import open3d as o3d
+
+from modules.loss.custom_loss import loss_and_pred
 
 
 class User:
@@ -69,7 +71,7 @@ class User:
             sensor=self.ARCH["dataset"]["sensor"],
             max_points=self.ARCH["dataset"]["max_points"],
             batch_size=self.infer_batch_size,
-            workers=2,  # self.ARCH["train"]["workers"],
+            workers=8,  # self.ARCH["train"]["workers"],
             gt=True,
             shuffle_train=False,
         )
@@ -86,7 +88,7 @@ class User:
             )
             self.model = nn.DataParallel(self.model)
 
-            checkpoint = "MFMOS_valid_final_best"
+            checkpoint = "MFMOS_train_best"
             w_dict = torch.load(
                 f"{self.modeldir}/{checkpoint}",
                 map_location=lambda storage, loc: storage,
@@ -201,93 +203,89 @@ class User:
 
         with torch.no_grad():
             for i, (
-                (GTs_moving, GTs_movable),
-                (proj_full, bev_full),
-                (proj_labels, proj_movable_labels),
-                (bev_labels, bev_movable_labels),
-                (proj_x, proj_y),
-                (bev_proj_x, bev_proj_y),
-                (path_seq, path_name, npoints),
+                GTs_moving,  # (150000, )
+                GTs_movable,  # (150000, )
+                proj_full,  # (13, h, w)
+                proj_x,  # (150000, )
+                proj_y,  # (150000, )
+                path_seq,  # str
+                path_name,  # str
+                npoints,  # int
+                (bev_f1, bev_f2, bev_f3), # (64, 313, 313), (128, 157, 157), (256, 79, 79)
             ) in enumerate(tqdm(loader, ncols=80)):
                 if self.gpu:
-                    GTs_moving = GTs_moving.cuda(non_blocking=True)
+                    GTs_moving =  GTs_moving.cuda(non_blocking=True)
                     GTs_movable = GTs_movable.cuda(non_blocking=True)
                     proj_full = proj_full.cuda(non_blocking=True)
-                    bev_full = bev_full.cuda(non_blocking=True)
-                    proj_labels = proj_labels.cuda(non_blocking=True).long()
-                    proj_movable_labels = proj_movable_labels.cuda(non_blocking=True).long()
-                    bev_labels = bev_labels.cuda(non_blocking=True).long()
-                    bev_movable_labels = bev_movable_labels.cuda(non_blocking=True).long()
-                    proj_x = proj_x.cuda(non_blocking=True)
-                    proj_y = proj_y.cuda(non_blocking=True)
-                    bev_proj_x = bev_proj_x.cuda(non_blocking=True)
-                    bev_proj_y = bev_proj_y.cuda(non_blocking=True)
+                    proj_x =   proj_x.cuda(non_blocking=True)
+                    proj_y =   proj_y.cuda(non_blocking=True)
+                    bev_f1 = bev_f1.cuda(non_blocking=True)
+                    bev_f2 = bev_f2.cuda(non_blocking=True)
+                    bev_f3 = bev_f3.cuda(non_blocking=True)
 
-                end = time.time()
-                r_moving, r_movable, b_moving, b_movable = self.model(
-                    proj_full, bev_full)
-                res = time.time() - end
-                cnn.append(res)
+                start = time.time()
+                output, movable_output = self.model(proj_full, bev_f1, bev_f2, bev_f3)
+                cnn.append(time.time() - start)
 
-                """모든것을 batch 해제"""
-                """이 아래부터는 배치가 1임을 가정하고 배치를 해제합니다.(추론만 하기 때문)"""
-                points = points[0]
-                npoints = npoints[0]
-                proj_full, bev_full = proj_full[0], bev_full[0]
-                proj_labels, proj_movable_labels = proj_labels[0], proj_movable_labels[0]
-                bev_labels, bev_movable_labels = bev_labels[0], bev_movable_labels[0]
-                proj_x, proj_y = proj_x[0], proj_y[0]
-                bev_proj_x, bev_proj_y = bev_proj_x[0], bev_proj_y[0]
-                GTs_moving, GTs_movable = GTs_moving[0], GTs_movable[0]
-                r_moving, r_movable = r_moving[0], r_movable[0]
-                b_moving, b_movable = b_moving[0], b_movable[0]
-                path_seq = path_seq[0]
-                path_name = path_name[0]
+                bs = npoints.shape[0]
+                """""" """""" """""" """""" """""" """"""
+                """   모든것을 batch 단위 간주   """
+                """""" """""" """""" """""" """""" """"""
 
-                # (n, 3)
-                # (1, ) =: n
-                # (13, h, w), (13, h_bev, w_bev)
-                # h, w
-                # h_bev, w_bev
-                # (150000, ), (150000, )
-                # (150000, ), (150000, )
-                # (n, ), (n, )
-                # (3, h, w), (3, h, w)
-                # (3, h_bev, w_bev), (3, h_bev, w_bev)
+                all_moving, all_movable, all_GTs_moving, all_GTs_movable = (
+                    [],
+                    [],
+                    [],
+                    [],
+                )
+                for b in range(bs):
+                    n = npoints[b]
+                    moving_single = output[b]  # (3, h, w)
+                    movable_single = movable_output[b]  # (3, h, w)
+                    proj_y_single = proj_y[b][:n]  # (#points, )
+                    proj_x_single = proj_x[b][:n]  # (#points, )
+                    GTs_moving_single = GTs_moving[b][:n]  # (#points, )
+                    GTs_movable_single = GTs_movable[b][:n]  # (#points, )
 
-                ##############################################
-                proj_x = proj_x[:npoints]  # (n, )
-                proj_y = proj_y[:npoints]  # (n, )
-                bev_proj_x = bev_proj_x[:npoints]  # (n, )
-                bev_proj_y = bev_proj_y[:npoints]  # (n, )
+                    moving_single = moving_single[
+                        :, proj_y_single, proj_x_single
+                    ]  # (3, #points)
+                    movable_single = movable_single[
+                        :, proj_y_single, proj_x_single
+                    ]  # (3, #points)
 
-                # 3차원 공간에서 점별 클래스 확률
-                moving = r_moving[:, proj_y, proj_x]  # (3, n)
-                bev_moving = b_moving[:, bev_proj_y, bev_proj_x]  # (3, n)
-                final_moving = (moving + bev_moving) / 2  # (3, n)
+                    all_moving.append(moving_single)
+                    all_movable.append(movable_single)
+                    all_GTs_moving.append(GTs_moving_single)
+                    all_GTs_movable.append(GTs_movable_single)
 
-                    batch_preds = torch.split(preds, npoints.tolist())  # 리스트 형태로 분할된 텐서
-    batch_preds = list(batch_preds)  # 명시적으로 리스트 변환
-    print(npoints)
-    for pred in batch_preds:
-        print(pred.shape)
+                moving = torch.cat(all_moving, dim=1)  # (3, sum(npoints))
+                movable = torch.cat(all_movable, dim=1)  # (3, sum(npoints))
+                GTs_moving = torch.cat(all_GTs_moving, dim=0)  # (sum(npoints), )
+                GTs_movable = torch.cat(all_GTs_movable, dim=0)  # (sum(npoints), )
 
-                moving_mos_pred = moving.argmax(dim=0)  # (n, )
-                bev_moving_mos_pred = bev_moving.argmax(dim=0)  # (n, )
-                final_mos_pred = final_moving.argmax(dim=0)  # (n, )
+                pred_moving = moving.argmax(dim=0)  # (sum(ith-#points), )
+                pred_movable = movable.argmax(dim=0)  # (sum(ith-#points), )
 
-                folder_names = {0: "moving",
-                                1: "bev_moving", 2: "final_moving"}
-                for i, mos_pred in enumerate([moving_mos_pred, bev_moving_mos_pred, final_mos_pred]):
-                    pred_np = mos_pred.cpu().numpy().reshape((-1)).astype(np.int32)
-                    pred_np = to_orig_fn(pred_np)
-                    pred_np[pred_np == 0] = 9
-                    path = os.path.join(
-                        self.outputdir, "sequences", path_seq, f"predictions_{folder_names[i]}", path_name[
-                            :6] + ".label"
-                    )
-                    pred_np.tofile(path)
-                    o3d_visualize(points, pred_np)
+                batch_moving_preds = list(torch.split(pred_moving, npoints.tolist()))
+                batch_movable_preds = list(torch.split(pred_movable, npoints.tolist()))
+
+                folder_names = {0: "moving", 1: "movable"}
+
+
+                bin_path = os.path.join("/home/workspace/KITTI/dataset/sequences", path_seq[0], "velodyne", f"{path_name[0][:6]}.bin")
+                points = np.fromfile(bin_path, dtype=np.float32).reshape(-1, 4)[:, :3]
+                for batch_moving, batch_movable in zip(batch_moving_preds, batch_movable_preds):
+                    for i, mos_pred in enumerate([batch_moving, batch_movable]):
+                        pred_np = mos_pred.cpu().numpy().reshape((-1)).astype(np.int32)
+                        pred_np = to_orig_fn(pred_np)
+                        # pred_np[pred_np == 0] = 9 # unlabeled를 static으로 해야하는가?
+                        if i == 0:
+                            path = os.path.join(self.outputdir, "sequences", path_seq[0], "predictions", path_name[0][:6] + ".label")
+                        else:
+                            path = os.path.join(self.outputdir, "sequences", path_seq[0], f"predictions_{folder_names[i]}", path_name[0][:6] + ".label")
+                        pred_np.tofile(path)
+                        # o3d_visualize(points, pred_np)
 
         if cnn:  # 리스트가 비어 있지 않은 경우만 계산
             avg = sum(cnn) / len(cnn)  # 평균 계산
@@ -298,7 +296,7 @@ class User:
 
 
 def o3d_visualize(points, labels):
-    xyz = points.cpu().numpy()
+    xyz = points
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(xyz)
 
