@@ -151,8 +151,10 @@ class Trainer:
         self.movable_criterion = nn.NLLLoss(
             ignore_index=0, weight=self.movable_loss_w.double()
         ).cuda()
-        self.ls = Lovasz_softmax_PointCloud(ignore=0).to(self.device)
-        self.movable_ls = Lovasz_softmax_PointCloud(ignore=0).to(self.device)
+        self.ls_3d = Lovasz_softmax_PointCloud(ignore=0).to(self.device)
+        self.movable_ls_3d = Lovasz_softmax_PointCloud(ignore=0).to(self.device)
+        self.ls_2d = Lovasz_softmax(ignore=0).cuda()
+        self.movable_ls_2d = Lovasz_softmax(ignore=0).cuda()
 
     def set_gpu_cuda(self):
         """
@@ -366,7 +368,18 @@ class Trainer:
 
         return
 
-    def train_epoch(self, train_loader, model, all_criterion, optimizer, epoch, all_evaluator, scheduler, color_fn, report=10):
+    def train_epoch(
+        self,
+        train_loader,
+        model,
+        all_criterion,
+        optimizer,
+        epoch,
+        all_evaluator,
+        scheduler,
+        color_fn,
+        report=10,
+    ):
         losses = AverageMeter()
         moving_losses = AverageMeter()
         movable_losses = AverageMeter()
@@ -384,19 +397,23 @@ class Trainer:
         for i, (
             GTs_moving,  # (150000, )
             GTs_movable,  # (150000, )
+            GTs_moving_2D,  # (h, w)
+            GTs_movable_2D,  # (h, w)
             proj_full,  # (13, h, w)
             proj_x,  # (150000, )
             proj_y,  # (150000, )
             path_seq,  # str
             path_name,  # str
             npoints,  # int
-            (bev_f1, bev_f2, bev_f3), # (64, 313, 313), (128, 157, 157), (256, 79, 79)
+            (bev_f1, bev_f2, bev_f3),  # (64, 313, 313), (128, 157, 157), (256, 79, 79)
         ) in enumerate(train_loader):
             self.data_time_t.update(time.time() - end)
 
             if self.gpu:
                 GTs_moving = GTs_moving.cuda(non_blocking=True)
                 GTs_movable = GTs_movable.cuda(non_blocking=True)
+                GTs_moving_2D = GTs_moving_2D.cuda(non_blocking=True)
+                GTs_movable_2D = GTs_movable_2D.cuda(non_blocking=True)
                 proj_full = proj_full.cuda(non_blocking=True)
                 proj_x = proj_x.cuda(non_blocking=True)
                 proj_y = proj_y.cuda(non_blocking=True)
@@ -404,13 +421,16 @@ class Trainer:
                 bev_f2 = bev_f2.cuda(non_blocking=True)
                 bev_f3 = bev_f3.cuda(non_blocking=True)
 
-            output, movable_output = model(proj_full, bev_f1, bev_f2, bev_f3)
+            # output, movable_output = model(proj_full, bev_f1, bev_f2, bev_f3)
+            output, _, movable_output, _ = model(proj_full)
 
             bs = npoints.shape[0]
+            mode = "3D"
             """""" """""" """""" """""" """""" """"""
             """   모든것을 batch 단위 간주   """
             """""" """""" """""" """""" """""" """"""
 
+            """3D 버전"""
             all_moving, all_movable, all_GTs_moving, all_GTs_movable = [], [], [], []
             for b in range(bs):
                 n = npoints[b]
@@ -431,7 +451,7 @@ class Trainer:
                 all_moving.append(moving_single)
                 all_movable.append(movable_single)
                 all_GTs_moving.append(GTs_moving_single)
-                all_GTs_movable.append(GTs_movable_single)      
+                all_GTs_movable.append(GTs_movable_single)
 
             moving = torch.cat(all_moving, dim=1)  # (3, sum(npoints))
             movable = torch.cat(all_movable, dim=1)  # (3, sum(npoints))
@@ -439,12 +459,45 @@ class Trainer:
             GTs_movable = torch.cat(all_GTs_movable, dim=0)  # (sum(npoints), )
 
             l_moving, pred_moving, _ = loss_and_pred(
-                moving, GTs_moving, criterion, self.ls
+                moving,
+                GTs_moving,
+                criterion,
+                self.ls_3d,
+                mode,
             )
 
             l_movable, pred_movable, _ = loss_and_pred(
-                movable, GTs_movable, movable_criterion, self.movable_ls
+                movable,
+                GTs_movable,
+                movable_criterion,
+                self.movable_ls_3d,
+                mode,
             )
+            """""" """""" "3D 버전 끝" """""" """"""
+
+            """2D 버전"""
+            # l_moving, pred_moving, _ = loss_and_pred(
+            #     output,
+            #     GTs_moving_2D,
+            #     criterion,
+            #     self.ls_2d,
+            #     mode,
+            #     proj_y,
+            #     proj_x,
+            #     npoints,
+            # )
+
+            # l_movable, pred_movable, _ = loss_and_pred(
+            #     movable_output,
+            #     GTs_movable_2D,
+            #     movable_criterion,
+            #     self.movable_ls_2d,
+            #     mode,
+            #     proj_y,
+            #     proj_x,
+            #     npoints,
+            # )
+            """""" """""" "2D 버전 끝" """""" """"""
 
             loss = l_moving + l_movable
 
@@ -462,16 +515,17 @@ class Trainer:
 
                 movable_evaluator.reset()
                 movable_evaluator.addBatch(pred_movable, GTs_movable)
+
                 movable_accuracy = movable_evaluator.getacc()
                 movable_jaccard, movable_class_jaccard = movable_evaluator.getIoU()
 
-            losses.update(mean_loss.item(), bs)
-            moving_losses.update(l_moving.mean().item(), bs)
-            movable_losses.update(l_movable.mean().item(), bs)
-            acc.update(accuracy.item(), bs)
-            iou.update(jaccard.item(), bs)
-            movable_acc.update(movable_accuracy.item(), bs)
-            movable_iou.update(movable_jaccard.item(), bs)
+            losses.update(mean_loss.item())
+            moving_losses.update(l_moving.mean().item())
+            movable_losses.update(l_movable.mean().item())
+            acc.update(accuracy.item())
+            iou.update(jaccard.item())
+            movable_acc.update(movable_accuracy.item())
+            movable_iou.update(movable_jaccard.item())
 
             # measure elapsed time
             self.batch_time_t.update(time.time() - end)
@@ -569,23 +623,33 @@ class Trainer:
         evaluator.reset()
         movable_evaluator.reset()
 
+        infer_times = []
+
         with torch.no_grad():
             end = time.time()
             for i, (
                 GTs_moving,  # (150000, )
                 GTs_movable,  # (150000, )
+                GTs_moving_2D,  # (h, w)
+                GTs_movable_2D,  # (h, w)
                 proj_full,  # (13, h, w)
                 proj_x,  # (150000, )
                 proj_y,  # (150000, )
                 path_seq,  # str
                 path_name,  # str
                 npoints,  # int
-                (bev_f1, bev_f2, bev_f3), # (64, 313, 313), (128, 157, 157), (256, 79, 79)
+                (
+                    bev_f1,
+                    bev_f2,
+                    bev_f3,
+                ),  # (64, 313, 313), (128, 157, 157), (256, 79, 79)
             ) in enumerate(tqdm(val_loader, desc="Validation:", ncols=80)):
 
                 if self.gpu:
                     GTs_moving = GTs_moving.cuda(non_blocking=True)
                     GTs_movable = GTs_movable.cuda(non_blocking=True)
+                    GTs_moving_2D = GTs_moving_2D.cuda(non_blocking=True)
+                    GTs_movable_2D = GTs_movable_2D.cuda(non_blocking=True)
                     proj_full = proj_full.cuda(non_blocking=True)
                     proj_x = proj_x.cuda(non_blocking=True)
                     proj_y = proj_y.cuda(non_blocking=True)
@@ -593,13 +657,18 @@ class Trainer:
                     bev_f2 = bev_f2.cuda(non_blocking=True)
                     bev_f3 = bev_f3.cuda(non_blocking=True)
 
-                output, movable_output = model(proj_full, bev_f1, bev_f2, bev_f3) # (bs, 3, h, w), (bs, 3, h, w)
+                start = time.time()
+                # output, movable_output = self.model(proj_full, bev_f1, bev_f2, bev_f3)
+                output, _, movable_output, _ = self.model(proj_full)
+                infer_times.append(time.time() - start)
 
                 bs = npoints.shape[0]
+                mode = "3D"
                 """""" """""" """""" """""" """""" """"""
                 """   모든것을 batch 단위 간주   """
                 """""" """""" """""" """""" """""" """"""
 
+                """3D 버전"""
                 all_moving, all_movable, all_GTs_moving, all_GTs_movable = (
                     [],
                     [],
@@ -633,12 +702,45 @@ class Trainer:
                 GTs_movable = torch.cat(all_GTs_movable, dim=0)  # (sum(npoints), )
 
                 l_moving, pred_moving, (jacc, wce) = loss_and_pred(
-                    moving, GTs_moving, criterion, self.ls
-                ) # loss, (n, )의 벡터, (jacc, wce)
+                    moving,
+                    GTs_moving,
+                    criterion,
+                    self.ls_3d,
+                    mode,
+                )
 
                 l_movable, pred_movable, (movable_jacc, movable_wce) = loss_and_pred(
-                    movable, GTs_movable, movable_criterion, self.ls
-                ) # loss, (n, )의 벡터, (jacc, wce)
+                    movable,
+                    GTs_movable,
+                    movable_criterion,
+                    self.movable_ls_3d,
+                    mode,
+                )
+                """""" """""" "3D 버전 끝" """""" """"""
+
+                """2D 버전"""
+                # l_moving, pred_moving, (jacc, wce) = loss_and_pred(
+                #     output,
+                #     GTs_moving_2D,
+                #     criterion,
+                #     self.ls_2d,
+                #     mode,
+                #     proj_y,
+                #     proj_x,
+                #     npoints,
+                # )
+
+                # l_movable, pred_movable, (movable_jacc, movable_wce) = loss_and_pred(
+                #     movable_output,
+                #     GTs_movable_2D,
+                #     movable_criterion,
+                #     self.movable_ls_2d,
+                #     mode,
+                #     proj_y,
+                #     proj_x,
+                #     npoints,
+                # )
+                """""" """""" "2D 버전 끝" """""" """"""
 
                 loss = l_moving + l_movable
 
@@ -721,6 +823,13 @@ class Trainer:
             str_line = "*" * 80
             print(str_line)
             save_to_txtlog(self.logdir, "log.txt", str_line)
+
+        if infer_times:  # 리스트가 비어 있지 않은 경우만 계산
+            avg = sum(infer_times) / len(infer_times)  # 평균 계산
+            avg_ms = avg * 1000  # 초 -> 밀리초 변환
+
+            # 소수점 4자리까지 출력
+            print(f"평균 시간: {avg_ms:.4f} ms")
 
         return acc.avg, iou.avg, losses.avg, rand_imgs, hetero_l.avg
 

@@ -61,8 +61,7 @@ def my_collate(batch):
     to_augment_unique = torch.unique(to_augment_unique)
 
     for k in to_augment_unique:
-        data = torch.cat(
-            (data, torch.flip(data[k.item()], [2]).unsqueeze(0)), dim=0)
+        data = torch.cat((data, torch.flip(data[k.item()], [2]).unsqueeze(0)), dim=0)
         proj_labels = torch.cat(
             (proj_labels, torch.flip(proj_labels[k.item()], [1]).unsqueeze(0)), dim=0
         )
@@ -107,10 +106,8 @@ class SemanticKitti(Dataset):
         self.sensor = sensor
         self.sensor_img_H = sensor["img_prop"]["height"]
         self.sensor_img_W = sensor["img_prop"]["width"]
-        self.sensor_img_means = torch.tensor(
-            sensor["img_means"], dtype=torch.float)
-        self.sensor_img_stds = torch.tensor(
-            sensor["img_stds"], dtype=torch.float)
+        self.sensor_img_means = torch.tensor(sensor["img_means"], dtype=torch.float)
+        self.sensor_img_stds = torch.tensor(sensor["img_stds"], dtype=torch.float)
         self.sensor_fov_up = sensor["fov_up"]
         self.sensor_fov_down = sensor["fov_down"]
         self.valid_residual_delta_t = valid_residual_delta_t
@@ -226,8 +223,7 @@ class SemanticKitti(Dataset):
                         + str(i + 1)
                         + " = "
                         + "[os.path.join(dp, f) for dp, dn, fn in "
-                        "os.walk(os.path.expanduser(residual_path_" +
-                        str(i + 1) + "))"
+                        "os.walk(os.path.expanduser(residual_path_" + str(i + 1) + "))"
                         " for f in fn if is_residual(f)]"
                     )
 
@@ -246,8 +242,7 @@ class SemanticKitti(Dataset):
             # convert kitti poses from camera coord to LiDAR coord
             new_poses = []
             for pose in poses:
-                new_poses.append(T_velo_cam.dot(
-                    inv_frame0).dot(pose).dot(T_cam_velo))
+                new_poses.append(T_velo_cam.dot(inv_frame0).dot(pose).dot(T_cam_velo))
             self.poses[seq] = np.array(new_poses)
 
             # check all scans have labels
@@ -289,8 +284,7 @@ class SemanticKitti(Dataset):
                     )
         # print("\033[32m No model directory found.\033[0m")
 
-        print(
-            f"\033[32m There are {self.dataset_size} frames in total. \033[0m")
+        print(f"\033[32m There are {self.dataset_size} frames in total. \033[0m")
         if drop_few_static_frames:
             self.remove_few_static_frames()
             print(
@@ -340,8 +334,7 @@ class SemanticKitti(Dataset):
                         for i in range(self.n_input_scans)
                     ]
             else:
-                residual_input_scans_id = [
-                    1 * i for i in range(self.n_input_scans)]
+                residual_input_scans_id = [1 * i for i in range(self.n_input_scans)]
 
             if self.use_residual:
                 # for i in range(self.n_input_scans):
@@ -411,30 +404,22 @@ class SemanticKitti(Dataset):
                 scan.sem_label = self.map(scan.sem_label, self.learning_map)
                 scan.proj_sem_movable_label = scan.proj_sem_label.copy()
 
-                scan.proj_sem_label = self.map(
-                    scan.proj_sem_label, self.learning_map)
+                scan.proj_sem_label = self.map(scan.proj_sem_label, self.learning_map)
                 scan.proj_sem_movable_label = self.map(
                     scan.proj_sem_movable_label, self.movable_learning_map
                 )
 
             # make a tensor of the uncompressed data (with the max num points)
             unproj_n_points = scan.points.shape[0]
-            unproj_xyz = torch.full(
-                (self.max_points, 3), -1.0, dtype=torch.float)
+            unproj_xyz = torch.full((self.max_points, 3), -1.0, dtype=torch.float)
             unproj_xyz[:unproj_n_points] = torch.from_numpy(scan.points)
-            unproj_range = torch.full(
-                [self.max_points], -1.0, dtype=torch.float)
-            unproj_range[:unproj_n_points] = torch.from_numpy(
-                scan.unproj_range)
-            unproj_remissions = torch.full(
-                [self.max_points], -1.0, dtype=torch.float)
-            unproj_remissions[:unproj_n_points] = torch.from_numpy(
-                scan.remissions)
+            unproj_range = torch.full([self.max_points], -1.0, dtype=torch.float)
+            unproj_range[:unproj_n_points] = torch.from_numpy(scan.unproj_range)
+            unproj_remissions = torch.full([self.max_points], -1.0, dtype=torch.float)
+            unproj_remissions[:unproj_n_points] = torch.from_numpy(scan.remissions)
             if self.gt:
-                unproj_labels = torch.full(
-                    [self.max_points], -1.0, dtype=torch.int32)
-                unproj_labels[:unproj_n_points] = torch.from_numpy(
-                    scan.sem_label)
+                unproj_labels = torch.full([self.max_points], -1.0, dtype=torch.int32)
+                unproj_labels[:unproj_n_points] = torch.from_numpy(scan.sem_label)
             else:
                 unproj_labels = []
 
@@ -489,8 +474,7 @@ class SemanticKitti(Dataset):
 
         if self.use_normal:
             proj_full = torch.cat(
-                [proj_full, torch.from_numpy(
-                    scan.normal_map).clone().permute(2, 0, 1)]
+                [proj_full, torch.from_numpy(scan.normal_map).clone().permute(2, 0, 1)]
             )  # 5 + 3 = 8 channel
             # proj_full = torch.cat([proj_full, proj_xyz.clone().permute(2, 0, 1)]) # 5 + 3 = 8 channel
 
@@ -501,8 +485,7 @@ class SemanticKitti(Dataset):
                 proj_full = torch.cat(
                     [
                         proj_full,
-                        torch.unsqueeze(
-                            eval("proj_residuals_" + str(i + 1)), 0),
+                        torch.unsqueeze(eval("proj_residuals_" + str(i + 1)), 0),
                     ]
                 )
 
@@ -514,28 +497,28 @@ class SemanticKitti(Dataset):
         path_seq = path_split[-3]
         path_name = path_split[-1].replace(".bin", ".label")
 
-        print(
-            "[proj_full.shape]",
-            proj_full.shape,  # torch.Size([13, 64, 2048])
-            "[(proj_labels.shape, proj_movable_labels.shape)]",
-            # (torch.Size([64, 2048]), torch.Size([64, 2048]))
-            (proj_labels.shape, proj_movable_labels.shape),
-            "[(path_seq, path_name)]",
-            (path_seq, path_name),  # ('06', '000135.label')
-            "[(proj_x.shape, proj_y.shape)]",
-            # (torch.Size([150000]), torch.Size([150000]))
-            (proj_x.shape, proj_y.shape),
-            "[(proj_range.shape, unproj_range.shape)]",
-            # (torch.Size([64, 2048]), torch.Size([150000]))
-            (proj_range.shape, unproj_range.shape),
-            "[unproj_n_points]",
-            unproj_n_points,  # 124150
-            "[proj_x]",
-            proj_x,  # tensor([1010, 1009, 1008,  ...,   -1,   -1,   -1])
-            "\n",
-            sep="\n",
-            end="=========================================\n",
-        )
+        # print(
+        #     "[proj_full.shape]",
+        #     proj_full.shape,  # torch.Size([13, 64, 2048])
+        #     "[(proj_labels.shape, proj_movable_labels.shape)]",
+        #     # (torch.Size([64, 2048]), torch.Size([64, 2048]))
+        #     (proj_labels.shape, proj_movable_labels.shape),
+        #     "[(path_seq, path_name)]",
+        #     (path_seq, path_name),  # ('06', '000135.label')
+        #     "[(proj_x.shape, proj_y.shape)]",
+        #     # (torch.Size([150000]), torch.Size([150000]))
+        #     (proj_x.shape, proj_y.shape),
+        #     "[(proj_range.shape, unproj_range.shape)]",
+        #     # (torch.Size([64, 2048]), torch.Size([150000]))
+        #     (proj_range.shape, unproj_range.shape),
+        #     "[unproj_n_points]",
+        #     unproj_n_points,  # 124150
+        #     "[proj_x]",
+        #     proj_x,  # tensor([1010, 1009, 1008,  ...,   -1,   -1,   -1])
+        #     "\n",
+        #     sep="\n",
+        #     end="=========================================\n",
+        # )
 
         # [infer.py]                  [trainer.py]
         # proj_in,                    in_vol,
@@ -659,8 +642,7 @@ class SemanticKitti(Dataset):
                 self.label_files[seq] = useful_label_paths
 
                 # poses_file
-                self.poses[seq] = self.poses[seq][list(
-                    map(int, pending_dict[seq]))]
+                self.poses[seq] = self.poses[seq][list(map(int, pending_dict[seq]))]
 
                 assert len(useful_scan_paths) == len(useful_label_paths)
                 assert len(useful_scan_paths) == self.poses[seq].shape[0]
@@ -678,18 +660,15 @@ class SemanticKitti(Dataset):
                 if self.use_residual:
                     # for i in range(self.n_input_scans):
                     for i in self.all_residaul_id:
-                        tmp_residuals = eval(
-                            f"self.residual_files_{i+1}['{seq}']")
+                        tmp_residuals = eval(f"self.residual_files_{i+1}['{seq}']")
                         tmp_pending_list = eval(f"pending_dict['{seq}']")
                         tmp_usefuls = [
                             path
                             for path in tmp_residuals
                             if os.path.split(path)[-1][:-4] in tmp_pending_list
                         ]
-                        exec(
-                            f"self.residual_files_{i+1}['{seq}'] = tmp_usefuls")
-                        new_len = len(
-                            eval(f"self.residual_files_{i+1}['{seq}']"))
+                        exec(f"self.residual_files_{i+1}['{seq}'] = tmp_usefuls")
+                        new_len = len(eval(f"self.residual_files_{i+1}['{seq}']"))
                         print(
                             f"  Drop residual_images_{i+1} in seq{seq}: {len(tmp_residuals)} -> {new_len}"
                         )
@@ -697,8 +676,7 @@ class SemanticKitti(Dataset):
                         #     exec(f"assert len(self.residual_files_{i-1}[\'{seq}\']) == len(self.residual_files_{i}[\'{seq}\'])")
 
                 new_len = len(self.scan_files[seq])
-                print(
-                    f"Seq {seq} drop {raw_len - new_len}: {raw_len} -> {new_len}")
+                print(f"Seq {seq} drop {raw_len - new_len}: {raw_len} -> {new_len}")
                 self.total_remove += raw_len - new_len
 
 

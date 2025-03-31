@@ -71,6 +71,7 @@ def my_collate(batch):
 
     return data, project_mask, proj_labels
 
+
 def point_range_filter(pts, point_range):
     """
     data_dict: dict(pts, gt_bboxes_3d, gt_labels, gt_names, difficulty)
@@ -87,6 +88,7 @@ def point_range_filter(pts, point_range):
     )
     pts = pts[keep_mask]
     return pts
+
 
 class SemanticKitti(Dataset):
 
@@ -343,7 +345,6 @@ class SemanticKitti(Dataset):
                 self.map(tmp_sem_label, self.movable_learning_map)
             )
 
-
             proj_range = torch.from_numpy(scan.proj_range).clone()
             proj_xyz = torch.from_numpy(scan.proj_xyz).clone()
             proj_remission = torch.from_numpy(scan.proj_remission).clone()
@@ -353,8 +354,16 @@ class SemanticKitti(Dataset):
             proj_y = torch.full([self.max_points], -1, dtype=torch.long)
             proj_y[:n_points] = torch.from_numpy(scan.proj_y)
 
+            GTs_moving_2D = (
+                torch.from_numpy(scan.proj_sem_label).clone() * proj_mask
+            ).long()
+            GTs_movable_2D = (
+                torch.from_numpy(scan.proj_sem_movable_label).clone() * proj_mask
+            ).long()
+
             return (
                 (GTs_moving, GTs_movable),
+                (GTs_moving_2D, GTs_movable_2D),
                 proj_range,
                 proj_xyz,
                 scan.points,
@@ -366,10 +375,14 @@ class SemanticKitti(Dataset):
             )
         elif mode == "bev":
             seq, frame_id = config
-            npz_path = os.path.join("/home/workspace/KITTI/dataset/sequences", seq, "bev_features", f"{frame_id:06d}.npz")
+            npz_path = os.path.join(
+                "/home/workspace/KITTI/dataset/sequences",
+                seq,
+                "bev_features",
+                f"{frame_id:06d}.npz",
+            )
             npz_file = np.load(npz_path)
             return npz_file["f1"], npz_file["f2"], npz_file["f3"]
-
 
     def __getitem__(self, dataset_index):
         seq, start_index = self.index_mapping[dataset_index]
@@ -402,6 +415,7 @@ class SemanticKitti(Dataset):
         # Range 스캔 데이터 가져오기
         (
             (GTs_moving, GTs_movable),
+            (GTs_moving_2D, GTs_movable_2D),
             proj_range,
             proj_xyz,
             points,
@@ -419,7 +433,10 @@ class SemanticKitti(Dataset):
             current_pose,
         )
 
-        bev_f1, bev_f2, bev_f3 = self.get_multiple_data_from_scan(mode="bev", config=[seq, current_index])
+        # bev_f1, bev_f2, bev_f3 = self.get_multiple_data_from_scan(
+        #     mode="bev", config=[seq, current_index]
+        # )
+        bev_f1, bev_f2, bev_f3 = torch.Tensor([]), torch.Tensor([]), torch.Tensor([])
 
         # residual 파일들을 torch.Tensor로 로드 (리스트 컴프리헨션 사용)
         proj_residuals = [torch.Tensor(np.load(f).copy()) for f in residual_files]
@@ -447,13 +464,15 @@ class SemanticKitti(Dataset):
         return (
             GTs_moving,  # (150000, )
             GTs_movable,  # (150000, )
+            GTs_moving_2D,  # (h, w)
+            GTs_movable_2D,  # (h, w)
             proj_full,  # (13, h, w)
             proj_x,  # (150000, )
             proj_y,  # (150000, )
             path_seq,  # str
             path_name,  # str
             npoints,  # int
-            (bev_f1, bev_f2, bev_f3), # (64, 313, 313), (128, 157, 157), (256, 79, 79)
+            (bev_f1, bev_f2, bev_f3),  # (64, 313, 313), (128, 157, 157), (256, 79, 79)
         )
 
     def __len__(self):

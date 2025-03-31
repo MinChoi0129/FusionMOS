@@ -34,5 +34,5 @@ torchrun --nproc_per_node=3 \
          ./train.py --dataset "$DatasetPath" \
                     --arch_cfg "$ArchConfig" \
                     --data_cfg "$DataConfig" \
-                    --log "$LogPath" \
-                    --pretrained "/home/workspace/work/FusionMOS/log/Train/2025-3-19-04:07"
+                    --log "$LogPath" 
+                    # --pretrained "/home/workspace/work/FusionMOS/log/Train/2025-3-19-04:07"

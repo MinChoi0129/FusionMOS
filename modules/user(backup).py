@@ -18,7 +18,7 @@ from modules.KNN import KNN
 # from modules.SalsaNextWithMotionAttention import *
 from modules.MFMOS import *
 
-from modules.PointRefine.spvcnn import SPVCNN
+# from modules.PointRefine.spvcnn import SPVCNN
 
 # from modules.PointRefine.spvcnn_lite import SPVCNN
 

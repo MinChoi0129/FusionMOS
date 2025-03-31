@@ -1,7 +1,7 @@
 #!/bin/bash
 
 DatasetPath=/home/workspace/KITTI/dataset
-ModelPath=/home/workspace/work/FusionMOS/log/Train/2025-3-20-07:25
+ModelPath=/home/workspace/work/FusionMOS/log/Train/2025-3-27-03:48
 SavePath=./log/Valid/predictions/
 SPLIT=valid # valid or test
 
